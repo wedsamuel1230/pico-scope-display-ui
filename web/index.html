@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="description" content="Web UI for the RP2040 single-shot oscilloscope: Web Serial or a built-in demo simulator.">
   <title>Pico Scope Display UI</title>
   <!-- GitHub Pages friendly: all paths relative (supports /repo/ subpaths) -->
   <link rel="stylesheet" href="css/scope.css">
@@ -11,18 +14,27 @@
   <header class="topbar">
     <h1>SCOPE <span class="badge ch1">CH1</span></h1>
     <div class="actions">
-      <button id="btn-connect" type="button">Connect</button>
-      <button id="btn-demo" type="button">Demo</button>
-      <button id="btn-run" type="button" disabled>Run</button>
-      <button id="btn-stop" type="button" disabled>Stop</button>
-      <button id="btn-disconnect" type="button" disabled>Disconnect</button>
+      <button id="btn-demo" type="button" class="primary"
+              title="Run the built-in simulator — no hardware needed">
+        Demo</button>
+      <button id="btn-connect" type="button"
+              title="Connect to a Pico over Web Serial (Chrome, HTTPS)">
+        Connect</button>
+      <button id="btn-run" type="button" disabled
+              title="Start capturing">Run</button>
+      <button id="btn-stop" type="button" disabled
+              title="Stop capturing">Stop</button>
+      <button id="btn-disconnect" type="button" disabled
+              title="Close the connection">Disconnect</button>
     </div>
     <div id="status" class="status" aria-live="polite">not connected</div>
   </header>
 
   <main>
-    <canvas id="scope-canvas" width="640" height="480"
-            aria-label="Oscilloscope waveform display"></canvas>
+    <canvas id="scope-canvas" width="240" height="320" role="img"
+            aria-label="Oscilloscope waveform display, portrait 240 by 320">
+      Waveform display. Press Demo to see a simulated signal.
+    </canvas>
     <section class="readouts" aria-label="Measurements">
       <div class="tile"><span class="tile-label">FREQ</span>
         <span id="m-freq" class="tile-value">—</span></div>
@@ -33,10 +45,11 @@
       <div class="tile"><span class="tile-label">RATE</span>
         <span id="m-rate" class="tile-value">—</span></div>
     </section>
+    <p id="sr-measurements" class="visually-hidden" aria-live="polite"></p>
     <p class="note">
-      Web Serial requires a Chromium browser and a secure context (HTTPS
-      or localhost). The <b>Demo</b> button runs the deterministic
-      simulator — identical binary frames, no device needed.
+      <b>Demo</b> runs the deterministic simulator — identical binary frames,
+      no device needed. <b>Connect</b> uses Web Serial (Chromium browser over
+      HTTPS or localhost) to talk to a Pico.
     </p>
   </main>
 

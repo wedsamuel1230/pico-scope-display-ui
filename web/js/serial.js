@@ -21,6 +21,7 @@ function SerialTransport() {
   let readAbort = { stop: false };
   let frameCb = null;
   let closeCb = null;
+  let hooked = false;
 
   async function open() {
     port = await navigator.serial.requestPort();
@@ -63,15 +64,16 @@ function SerialTransport() {
     setCallbacks(onFrame, onClose) {
       frameCb = onFrame;
       closeCb = onClose;
-      if (port) port.addEventListener("disconnect", portDisconnect);
     },
 
     async connect() {
       if (!this.supported) throw new Error("Web Serial unsupported");
-      if (!port) port = undefined; // ensure fresh
       await open();
-      if (port)
+      /* register the disconnect listener exactly once                */
+      if (port && !hooked) {
         port.addEventListener("disconnect", portDisconnect);
+        hooked = true;
+      }
     },
 
     async writeFrame(bytes) {
@@ -86,12 +88,16 @@ function SerialTransport() {
       if (reader) {
         try { await reader.cancel(); } catch (_) { /* closing */ }
       }
+      let err = null;
       if (port) {
-        try { await port.close(); } catch (_) { /* already closed */ }
-        port.removeEventListener("disconnect", portDisconnect);
+        const p = port;
         port = null;
+        hooked = false;
+        p.removeEventListener("disconnect", portDisconnect);
+        try { await p.close(); } catch (e) { err = e; }
       }
       if (closeCb) closeCb();
+      if (err) throw err;   /* surface a real port-close failure       */
     },
 
     isConnected() { return !!port; },
@@ -110,6 +116,7 @@ function DemoTransport() {
   let mode = 0;      /* 0 AUTO, 1 NORMAL    */
   let trigLevel = 2048;
   let running = false;
+  let lastSeq = 0;
 
   /* deterministic PRNG (mulberry32)                                  */
   let seed = 42;
@@ -155,6 +162,7 @@ function DemoTransport() {
       dispatch(frame(ScopeProto.MSG.HELLO_RSP, ev.seq, rsp));
     } else if (ev.type === ScopeProto.MSG.CAPTURE_REQ) {
       running = true;
+      lastSeq = ev.seq;
       setTimeout(() => tryCapture(), 30);
     } else if (ev.type === ScopeProto.MSG.STOP) {
       running = false;
@@ -164,25 +172,29 @@ function DemoTransport() {
   function tryCapture() {
     if (!running) return;
     const samples = new Uint16Array(count);
-    /* deterministic scene: 1.5 kHz sine + 3 kHz component + noise      */
-    const periods = 12.0 + (count % 7) * 0.5;
+    /* deterministic scene: ~1 kHz sine + light 3rd harmonic + noise.
+       Kept well under Nyquist at 100 kS/s so the trace reads as a clean
+       waveform rather than a dense band of min/max bars.              */
+    const f0 = 1000;
+    const f3 = 3000;
     for (let i = 0; i < count; i++) {
       const t = i / rate;
-      let v = 1400 * Math.sin(2 * Math.PI * (periods * rate / count) * t);
-      v += 500 * Math.sin(2 * Math.PI * 4 * (periods) * t / count * count / 1 * (rate / count));
-      v += (rnd() - 0.5) * 90;
+      let v = 1700 * Math.sin(2 * Math.PI * f0 * t);
+      v += 220 * Math.sin(2 * Math.PI * f3 * t);
+      v += (rnd() - 0.5) * 60;
       samples[i] = Math.max(0, Math.min(4095, Math.round(2048 + v)));
     }
 
     /* deterministic trigger search mirroring the firmware             */
     let trig = 0xFFFF;
     for (let i = 1; i < count; i++) {
-      if (samples[i - 1] < trigLevel && samples[i] >= trigLevel) {
-        trig = i; break;
-      }
+      const rising = samples[i - 1] < trigLevel && samples[i] >= trigLevel;
+      const falling = samples[i - 1] > trigLevel && samples[i] <= trigLevel;
+      if (edge === 0 ? rising : falling) { trig = i; break; }
     }
-    const flags = trig === 0xFFFF ? ScopeProto.FLAGS.NO_TRIGGER
-                                  : ScopeProto.FLAGS.NOT_CALIB;
+    /* no AFE yet, so the sim always reports codes-not-volts            */
+    let flags = ScopeProto.FLAGS.NOT_CALIB;
+    if (trig === 0xFFFF) flags |= ScopeProto.FLAGS.NO_TRIGGER;
 
     const payload = new Uint8Array(9 + count * 2);
     const v = new DataView(payload.buffer);
@@ -191,7 +203,7 @@ function DemoTransport() {
     v.setUint16(6, trig, true);
     payload[8] = flags;
     for (let i = 0; i < count; i++) v.setUint16(9 + i * 2, samples[i], true);
-    dispatch(frame(ScopeProto.MSG.CAPTURE_DATA, 0, payload));
+    dispatch(frame(ScopeProto.MSG.CAPTURE_DATA, lastSeq, payload));
   }
 
   return {
@@ -200,8 +212,13 @@ function DemoTransport() {
     setCallbacks(onFrame, onClose) { frameCb = onFrame; closeCb = onClose; },
     async connect() { /* nothing to open */ },
     async writeFrame(bytes) {
+      /* Defer responses so the caller can register its waiter first:  */
+      /* a synchronous reply would land before `pending` is populated. */
       for (const ev of ScopeProto.makeParser().feedBytes(bytes)) {
-        if (ev.event === "frame") respond(ev);
+        if (ev.event === "frame") {
+          const frameEv = ev;
+          setTimeout(() => respond(frameEv), 0);
+        }
       }
     },
     async close() {

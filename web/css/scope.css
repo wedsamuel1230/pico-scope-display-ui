@@ -26,6 +26,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--grid);
@@ -61,14 +62,22 @@ button:hover:not(:disabled) { background: #26303d; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+button.primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #0d1117;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) { background: #ffc233; }
+
 #btn-run   { color: var(--green); }
 #btn-stop  { color: var(--err); }
-#btn-demo  { color: var(--amber); }
 
 .status {
   margin-left: auto;
   font-size: 13px;
   color: var(--dim);
+  overflow-wrap: anywhere;
 }
 .status.ok   { color: var(--green); }
 .status.warn { color: var(--amber); }
@@ -77,8 +86,9 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 main { padding: 16px; display: grid; gap: 16px; justify-items: center; }
 
 #scope-canvas {
-  width: min(640px, 96vw);
-  aspect-ratio: 4 / 3;
+  height: min(560px, 70vh);
+  width: auto;
+  aspect-ratio: 240 / 320;      /* portrait instrument face, matches LCD */
   background: #000;
   border: 1px solid var(--grid);
   border-radius: 8px;
@@ -104,3 +114,14 @@ main { padding: 16px; display: grid; gap: 16px; justify-items: center; }
 
 .note { color: var(--dim); font-size: 13px; max-width: 640px; }
 .note b { color: var(--amber); }
+
+/* Announce measurements to assistive tech without 30 fps chatter. */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

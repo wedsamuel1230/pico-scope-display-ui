@@ -7,12 +7,15 @@
  *           -> CAPTURE_REQ -> (await) CAPTURE_DATA  (repeat while RUN)
  * Errors land in the status line: CRC error, capture timeout,
  * disconnected, unsupported. Demo transport needs no device.
+ *
+ * `render()` owns the whole instrument face; readings live in the DOM.
  */
 "use strict";
 
 (() => {
   const el = (id) => document.getElementById(id);
   const $status = el("status");
+  const $srLive = el("sr-measurements");
   const buttons = {
     connect: el("btn-connect"),
     demo: el("btn-demo"),
@@ -23,11 +26,13 @@
   const canvas = el("scope-canvas");
   let ctx = null;
 
-  let transport = null; // SerialTransport | DemoTransport
+  let transport = null;          // SerialTransport | DemoTransport
   let connected = false;
   let running = false;
   let seq = 2;
-  const pending = new Map(); // type -> resolve(ev)
+  const pending = new Map();     // type -> resolve(ev)
+  let lastFrame = null;          // last parsed capture (for redraw)
+  let srClock = 0;               // throttles the screen-reader live region
 
   function setStatus(text, cls) {
     $status.textContent = text;
@@ -49,12 +54,12 @@
     if (ev.event === "disconnected") {
       running = false;
       connected = false;
-      setStatus("disconnected", "err");
+      setStatus("device disconnected", "err");
       syncButtons();
       return;
     }
     if (ev.event === "invalid") {
-      setStatus("CRC / frame error — stream marked damaged", "warn");
+      setStatus("CRC / frame error — stream damaged", "warn");
       return;
     }
     if (ev.event === "frame") {
@@ -62,31 +67,71 @@
       if (waiter) { waiter(ev); return; }
       if (ev.type === ScopeProto.MSG.CAPTURE_DATA) onCaptureData(ev);
       else if (ev.type === ScopeProto.MSG.ERROR) {
-        setStatus("device ERROR: " + new TextDecoder()
+        setStatus("device error: " + new TextDecoder()
           .decode(ev.payload.subarray(3)), "err");
       }
     }
   }
 
-  let lastRate = 0;
+  /* ---- rendering: one owner for the whole face -------------------- */
+  function render() {
+    if (!ctx) return;
+    const f = lastFrame;
+    if (f) {
+      ScopePlot.drawAll(ctx, {
+        samples: f.samples, rate: f.rate, count: f.count,
+        running: running, flags: f.flags, triggerIndex: f.triggerIndex,
+      });
+    } else {
+      ScopePlot.drawAll(ctx, {
+        running: running,
+        message: connected ? "Waiting for data…" : "No signal — press Demo",
+      });
+    }
+  }
+
+  function clearFrame() { lastFrame = null; }
+
   function onCaptureData(ev) {
     const d = ScopeProto.parseCaptureData(ev.payload);
     if (!d) return;
-    lastRate = d.rate;
-    ScopePlot.drawTrace(ctx, d.samples);
-    ScopePlot.drawGrid(ctx);
+    lastFrame = d;
     updateTiles(d);
+    render();
     if (running) loop(); // next capture request
   }
 
+  function statusFlags(d) {
+    if (d.flags & ScopeProto.FLAGS.OVERFLOW)
+      setStatus("ADC FIFO overflow reported", "warn");
+    else if (d.flags & ScopeProto.FLAGS.NO_TRIGGER)
+      setStatus("no trigger — showing free-run data", "warn");
+    else if (running)
+      setStatus("capturing…", "ok");
+  }
+
   function updateTiles(d) {
-    let mn = 4096, mx = 0;
-    for (const s of d.samples) { if (s < mn) mn = s; if (s > mx) mx = s; }
+    const cal = !(d.flags & ScopeProto.FLAGS.NOT_CALIB);
+    let mn = 4096, mx = 0, sum = 0;
+    for (const s of d.samples) {
+      if (s < mn) mn = s;
+      if (s > mx) mx = s;
+      sum += s;
+    }
     const vpp = mx - mn;
-    el("m-vpp").textContent = d.flags & ScopeProto.FLAGS.NOT_CALIB
-      ? `${vpp} (raw)` : `${(vpp * 3.3 / 4095).toFixed(2)} V`;
-    /* frequency comes from device measurement text in real firmware;   */
-    /* demo estimates from crossings for now                            */
+    const mean = sum / d.samples.length;
+    let sumSq = 0;
+    for (const s of d.samples) { const x = s - mean; sumSq += x * x; }
+    const rms = Math.sqrt(sumSq / d.samples.length);
+
+    el("m-vpp").textContent = cal
+      ? (vpp * 3.3 / 4095).toFixed(2) + " V"
+      : vpp + " (raw)";
+    el("m-rms").textContent = cal
+      ? (rms * 3.3 / 4095).toFixed(2) + " V AC"
+      : rms.toFixed(0) + " (raw)";
+
+    /* frequency is estimated client-side until firmware reports it     */
     let crossings = 0;
     for (let i = 1; i < d.samples.length; i++) {
       if (d.samples[i - 1] < 2048 && d.samples[i] >= 2048) crossings++;
@@ -95,23 +140,34 @@
       ? crossings * (d.rate / d.samples.length)
       : NaN;
     el("m-freq").textContent = Number.isNaN(freq)
-      ? "—" : (freq >= 1000 ? (freq / 1000).toFixed(2) + " kHz"
-                            : freq.toFixed(1) + " Hz");
-    let sumSq = 0;
-    const mean = d.samples.reduce((a, b) => a + b, 0) / d.samples.length;
-    for (const s of d.samples) { const x = s - mean; sumSq += x * x; }
-    const rms = Math.sqrt(sumSq / d.samples.length);
-    el("m-rms").textContent = (d.flags & ScopeProto.FLAGS.NOT_CALIB)
-      ? rms.toFixed(0) + " (raw)" : rms.toFixed(2) + " raw";
-    el("m-rate").textContent = (d.rate / 1000).toFixed(0) + " kS/s";
-    if (d.flags & ScopeProto.FLAGS.OVERFLOW)
-      setStatus("ADC FIFO overflow reported", "warn");
+      ? "—"
+      : (freq >= 1000 ? (freq / 1000).toFixed(2) + " kHz (est)"
+                      : freq.toFixed(1) + " Hz (est)");
+
+    const r = d.rate;
+    el("m-rate").textContent =
+      r >= 1e6 ? (r / 1e6).toFixed(2) + " MS/s"
+      : r >= 1e3 ? (r / 1e3).toFixed(r % 1000 ? 1 : 0) + " kS/s"
+      : r + " S/s";
+
+    statusFlags(d);
+
+    /* announce readings to screen readers at most once per second      */
+    const now = Date.now();
+    if ($srLive && now - srClock > 1000) {
+      srClock = now;
+      $srLive.textContent =
+        `Vpp ${el("m-vpp").textContent}, RMS ${el("m-rms").textContent}, ` +
+        `frequency ${el("m-freq").textContent}, rate ${el("m-rate").textContent}`;
+    }
   }
 
   async function handshake() {
-    transport.writeFrame(ScopeProto.helloReq());
-    const hello = await awaitFrame(ScopeProto.MSG.HELLO_RSP, 3000);
-    if (!hello) { setStatus("connect timeout", "err"); return false; }
+    const p = awaitFrame(ScopeProto.MSG.HELLO_RSP, 3000);
+    await transport.writeFrame(ScopeProto.helloReq());
+    const hello = await p;
+    if (!hello) { setStatus("connect timeout — no greeting from device", "err");
+                  return false; }
     const rsp = ScopeProto.parseHelloRsp(hello.payload);
     if (!rsp) { setStatus("bad HELLO_RSP", "err"); return false; }
     return true;
@@ -119,9 +175,10 @@
 
   async function applyConfig() {
     seq += 1;
-    transport.writeFrame(
+    const p = awaitFrame(ScopeProto.MSG.ACK, 3000);
+    await transport.writeFrame(
       ScopeProto.setConfig(seq, 100000, 1024, 2048, 0, 0));
-    const ack = await awaitFrame(ScopeProto.MSG.ACK, 3000);
+    const ack = await p;
     if (!ack) { setStatus("config timeout", "err"); return false; }
     const a = ScopeProto.parseAck(ack.payload);
     if (!a || a.status !== ScopeProto.ACK.OK) {
@@ -132,53 +189,67 @@
 
   async function loop() {
     if (!running || !connected) return;
-    transport.writeFrame(ScopeProto.captureReq(seq));
+    try {
+      await transport.writeFrame(ScopeProto.captureReq(seq));
+    } catch (e) {
+      onEvents({ event: "disconnected" });
+    }
+  }
+
+  async function teardown() {
+    running = false;
+    if (transport) {
+      try { await transport.close(); } catch (_) { /* best effort */ }
+      transport = null;
+    }
+    connected = false;
+    syncButtons();
   }
 
   async function connect(kind) {
-    if (connected) { await disconnect(); }
+    if (connected) await disconnect();
+    clearFrame();
     try {
-      transport = kind === "demo"
-        ? DemoTransport()
-        : (function () {
-            const t = SerialTransport();
-            if (!t.supported) {
-              setStatus("Web Serial unsupported — use Chrome over HTTPS",
-                        "err");
-              return null;
-            }
-            return t;
-          })();
-      if (!transport) return;
-      transport.setCallbacks(onEvents,
-        () => { connected = false; running = false; syncButtons();
-                setStatus("disconnected", "err"); });
-      await transport.connect();
-      connected = true;
-      setStatus(`connected (${transport.name})`, "ok");
-      syncButtons();
-      if (await handshake() && await applyConfig()) {
-        ScopePlot.drawAll(ctx, null, 0, false, null);
+      if (kind === "demo") {
+        transport = DemoTransport();
+      } else {
+        const t = SerialTransport();
+        if (!t.supported) {
+          setStatus("Web Serial unsupported — use Chrome over HTTPS, "
+                    + "or press Demo", "err");
+          return;
+        }
+        transport = t;
       }
-    } catch (e) {
-      setStatus("connect failed: " + e.message, "err");
-      connected = false;
+      transport.setCallbacks(onEvents, () => {
+        connected = false; running = false; syncButtons();
+        setStatus("device disconnected", "err");
+      });
+      await transport.connect();
+      setStatus("connecting…");
+      if (!(await handshake())) { await teardown(); return; }
+      if (!(await applyConfig())) { await teardown(); return; }
+      connected = true;
+      setStatus("connected — " + (kind === "demo" ? "Simulator" : "Pico (USB)"),
+                "ok");
       syncButtons();
+      render();
+    } catch (e) {
+      setStatus("connect failed: " + e.message + " — try again", "err");
+      await teardown();
     }
   }
 
   async function disconnect() {
     running = false;
     if (transport) {
-      try {
-        transport.writeFrame(ScopeProto.stop(seq));
-      } catch (_) { /* fire-and-forget */ }
-      await transport.close();
+      try { await transport.writeFrame(ScopeProto.stop(seq)); }
+      catch (_) { /* fire-and-forget */ }
     }
-    transport = null;
-    connected = false;
+    await teardown();
+    clearFrame();
     setStatus("not connected");
-    syncButtons();
+    render();
   }
 
   function syncButtons() {
@@ -194,22 +265,30 @@
   buttons.disconnect.addEventListener("click", disconnect);
   buttons.run.addEventListener("click", () => {
     if (!connected) return;
-    running = true; syncButtons();
+    running = true;
+    syncButtons();
+    setStatus("capturing…", "ok");
     loop();
   });
-  buttons.stop.addEventListener("click", () => {
+  buttons.stop.addEventListener("click", async () => {
     running = false;
-    transport && transport.writeFrame(ScopeProto.stop(seq));
+    try { await transport.writeFrame(ScopeProto.stop(seq)); }
+    catch (_) { /* ignore */ }
+    setStatus("stopped");
     syncButtons();
+    render();
   });
 
   window.addEventListener("resize", () => {
-    if (canvas) ctx = ScopePlot.fitCanvas(canvas);
+    if (!canvas) return;
+    ctx = ScopePlot.fitCanvas(canvas);
+    render();                    /* re-render cached frame after resize */
   });
 
   window.addEventListener("load", () => {
     ctx = ScopePlot.fitCanvas(canvas);
-    ScopePlot.drawAll(ctx, null, 0, false, null);
+    clearFrame();
+    render();
     setStatus("not connected");
     syncButtons();
   });

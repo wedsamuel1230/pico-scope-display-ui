@@ -39,7 +39,6 @@ const ScopeProto = (() => {
   function cobsEncode(src) {
     const dst = new Uint8Array(src.length + Math.ceil(src.length / 254) + 1);
     let out = 0;
-    const codePtr = () => out++; // placeholder
     let codeIdx = out++;
     let code = 1;
     for (let i = 0; i < src.length; i++) {
@@ -161,13 +160,13 @@ const ScopeProto = (() => {
 
   /* decode CAPTURE_DATA payload                                        */
   function parseCaptureData(p) {
-    if (p.length < 7) return null;
+    if (p.length < 9) return null;
     const view = new DataView(p.buffer, p.byteOffset, p.byteLength);
     const rate = view.getUint32(0, true);
     const count = view.getUint16(4, true);
     const triggerIndex = view.getUint16(6, true);
-    const flags = p[8];
     if (p.length < 9 + count * 2) return null;
+    const flags = p[8];
     const samples = new Uint16Array(count);
     for (let i = 0; i < count; i++)
       samples[i] = view.getUint16(9 + i * 2, true);
