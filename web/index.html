@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pico Scope Display UI</title>
+  <!-- GitHub Pages friendly: all paths relative (supports /repo/ subpaths) -->
+  <link rel="stylesheet" href="css/scope.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>SCOPE <span class="badge ch1">CH1</span></h1>
+    <div class="actions">
+      <button id="btn-connect" type="button">Connect</button>
+      <button id="btn-demo" type="button">Demo</button>
+      <button id="btn-run" type="button" disabled>Run</button>
+      <button id="btn-stop" type="button" disabled>Stop</button>
+      <button id="btn-disconnect" type="button" disabled>Disconnect</button>
+    </div>
+    <div id="status" class="status" aria-live="polite">not connected</div>
+  </header>
+
+  <main>
+    <canvas id="scope-canvas" width="640" height="480"
+            aria-label="Oscilloscope waveform display"></canvas>
+    <section class="readouts" aria-label="Measurements">
+      <div class="tile"><span class="tile-label">FREQ</span>
+        <span id="m-freq" class="tile-value">—</span></div>
+      <div class="tile"><span class="tile-label">VPP</span>
+        <span id="m-vpp" class="tile-value">—</span></div>
+      <div class="tile"><span class="tile-label">RMS</span>
+        <span id="m-rms" class="tile-value">—</span></div>
+      <div class="tile"><span class="tile-label">RATE</span>
+        <span id="m-rate" class="tile-value">—</span></div>
+    </section>
+    <p class="note">
+      Web Serial requires a Chromium browser and a secure context (HTTPS
+      or localhost). The <b>Demo</b> button runs the deterministic
+      simulator — identical binary frames, no device needed.
+    </p>
+  </main>
+
+  <!--
+    Plain (non-module) scripts for maximum hosting compatibility.
+    Load order matters: protocol -> serial -> plot -> app.
+  -->
+  <script src="js/protocol.js"></script>
+  <script src="js/serial.js"></script>
+  <script src="js/plot.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

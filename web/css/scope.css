@@ -1,0 +1,106 @@
+/* Pico Scope Display UI — minimal dark scope look (240x320 concept) */
+
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --grid: #26323f;
+  --trace: #c9e94f;
+  --amber: #ffb000;
+  --green: #38d95b;
+  --dim: #7d8b99;
+  --text: #e6edf3;
+  --err: #ff5252;
+  --accent: #4f8cff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, sans-serif;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--grid);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 2px;
+}
+
+.badge {
+  font-size: 11px;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.badge.ch1 { color: #000; background: var(--amber); }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+button {
+  min-height: 44px;            /* touch-target-size */
+  padding: 0 16px;
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  background: #1d242e;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+button:hover:not(:disabled) { background: #26303d; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#btn-run   { color: var(--green); }
+#btn-stop  { color: var(--err); }
+#btn-demo  { color: var(--amber); }
+
+.status {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--dim);
+}
+.status.ok   { color: var(--green); }
+.status.warn { color: var(--amber); }
+.status.err  { color: var(--err); }
+
+main { padding: 16px; display: grid; gap: 16px; justify-items: center; }
+
+#scope-canvas {
+  width: min(640px, 96vw);
+  aspect-ratio: 4 / 3;
+  background: #000;
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+}
+
+.readouts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 150px));
+  gap: 10px;
+}
+@media (max-width: 520px) { .readouts { grid-template-columns: repeat(2, 1fr); } }
+
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+}
+.tile-label { font-size: 11px; letter-spacing: 1px; color: var(--dim); }
+.tile-value { font-size: 18px; font-variant-numeric: tabular-nums; }
+
+.note { color: var(--dim); font-size: 13px; max-width: 640px; }
+.note b { color: var(--amber); }
