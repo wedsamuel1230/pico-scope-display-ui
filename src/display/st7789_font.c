@@ -81,6 +81,6 @@ const uint8_t *font5x7_glyph(char c)
 {
     const uint8_t uc = (uint8_t)c;
     if (uc < GLYPH_BASE || uc > GLYPH_END)
-        return nullptr;
+        return NULL;
     return glyphs[uc - GLYPH_BASE];
 }

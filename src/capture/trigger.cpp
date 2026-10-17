@@ -1,106 +1,174 @@
 /**
- * trigger.cpp — rising/falling edge search with hysteresis
+ * trigger.cpp — analog edge trigger and digital bit-edge trigger
  *
- * Per docs/IMPLEMENTATION_GUIDE.md: rising edge = "prev < level AND
- * cur >= level" (falling mirrored), with a hysteresis band so noise
- * around the threshold does not produce spurious re-crossings. The
- * signal must leave the band on the far side (below level-hysteresis
- * for rising, above level+hysteresis for falling) before the next
- * crossing counts.
+ * Pure C++: no Pico SDK dependency, so tests/host compiles this file
+ * directly and exercises every code path on the development machine.
  */
 #include "trigger.h"
 
-uint16_t trigger_find(const uint16_t *samples, uint16_t count,
-                      uint16_t level, scope_edge_t edge, uint8_t hysteresis)
+#define SCOPE_ADC_FULL_SCALE 0x0FFFu
+
+/* ------------------------------------------------------------------ */
+/* Analog edge trigger                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Shared implementation. Sample i lives at samples[i * stride]; callers
+ * with interleaved buffers pass a pointer to the channel's first sample
+ * and stride = number of interleaved channels.
+ */
+static uint16_t find_impl(const uint16_t *samples, uint16_t count,
+                          uint16_t stride, uint16_t level,
+                          scope_edge_t edge, uint8_t hysteresis)
 {
-    if (samples == nullptr || count < 2u)
+    if (samples == nullptr || count < 2u || stride == 0u)
         return SCOPE_TRIGGER_NONE;
 
-    const uint16_t low  = (level > (uint16_t)hysteresis)
-                              ? (uint16_t)(level - hysteresis)
-                              : (uint16_t)0u;
-    const uint16_t high = (level < (uint16_t)(0x0FFFu - hysteresis))
+    const uint16_t low = (level > hysteresis) ? (uint16_t)(level - hysteresis) : 0u;
+    const uint16_t high = (level < (uint16_t)(SCOPE_ADC_FULL_SCALE - hysteresis))
                               ? (uint16_t)(level + hysteresis)
-                              : (uint16_t)0x0FFFu;
+                              : SCOPE_ADC_FULL_SCALE;
 
-    /* Start "armed" if the signal begins below the level (for rising
-     * searches) / above the level (for falling searches). Hysteresis
-     * then governs re-arming; a raw in-band start does not fire.        */
-    bool armed = (edge == SCOPE_EDGE_RISING)
-                     ? (samples[0] <= low)
-                     : (samples[0] >= high);
+    /* Arm only if the trace starts on the far side of the edge, so the
+     * first crossing is a real arm-and-fire, not a mid-trace hit. */
+    const uint16_t first = samples[0];
+    bool armed = (edge == SCOPE_EDGE_RISING) ? (first <= low) : (first >= high);
 
     for (uint16_t i = 1u; i < count; ++i) {
-        const uint16_t cur = samples[i];
+        const uint16_t cur = samples[(uint32_t)i * stride];
 
         if (edge == SCOPE_EDGE_RISING) {
-            if (armed && cur >= level)
-                return i; /* first post-band rising crossing           */
-            if (cur >= level)
-                armed = false; /* missed it — can only re-arm below-low */
-            else if (cur <= low)
-                armed = true;
+            if (armed && cur >= level) return i;
+            if (cur >= level) armed = false;
+            else if (cur <= low) armed = true;
         } else {
-            if (armed && cur <= level)
-                return i;
-            if (cur <= level)
-                armed = false; /* missed it — can only re-arm above-high */
-            else if (cur >= high)
-                armed = true;
+            if (armed && cur <= level) return i;
+            if (cur <= level) armed = false;
+            else if (cur >= high) armed = true;
         }
-        /* Staying inside the hysteresis band does not change the armed
-         * state, which is exactly the purpose of hysteresis.           */
     }
     return SCOPE_TRIGGER_NONE;
+}
+
+uint16_t trigger_find(const uint16_t *samples, uint16_t count, uint16_t level,
+                      scope_edge_t edge, uint8_t hysteresis)
+{
+    return find_impl(samples, count, 1u, level, edge, hysteresis);
+}
+
+uint16_t trigger_find_strided(const uint16_t *samples, uint16_t count,
+                              uint16_t stride, uint16_t level,
+                              scope_edge_t edge, uint8_t hysteresis)
+{
+    return find_impl(samples, count, stride, level, edge, hysteresis);
+}
+
+static uint16_t crossings_impl(const uint16_t *samples, uint16_t count,
+                               uint16_t stride, uint16_t level,
+                               scope_edge_t edge, uint8_t hysteresis,
+                               uint32_t *span_samples)
+{
+    if (span_samples != nullptr) *span_samples = 0u;
+    if (samples == nullptr || count < 2u || stride == 0u) return 0u;
+
+    const uint16_t low = (level > hysteresis) ? (uint16_t)(level - hysteresis) : 0u;
+    const uint16_t high = (level < (uint16_t)(SCOPE_ADC_FULL_SCALE - hysteresis))
+                              ? (uint16_t)(level + hysteresis)
+                              : SCOPE_ADC_FULL_SCALE;
+
+    const uint16_t first = samples[0];
+    bool armed = (edge == SCOPE_EDGE_RISING) ? (first <= low) : (first >= high);
+
+    uint16_t crossings = 0;
+    uint16_t idx_first = 0;
+    uint16_t idx_last = 0;
+
+    for (uint16_t i = 1u; i < count; ++i) {
+        const uint16_t cur = samples[(uint32_t)i * stride];
+        bool hit = false;
+
+        if (edge == SCOPE_EDGE_RISING) {
+            if (armed && cur >= level) hit = true;
+            if (cur >= level) armed = false;
+            else if (cur <= low) armed = true;
+        } else {
+            if (armed && cur <= level) hit = true;
+            if (cur <= level) armed = false;
+            else if (cur >= high) armed = true;
+        }
+
+        if (hit) {
+            if (crossings == 0u) idx_first = i;
+            idx_last = i;
+            ++crossings;
+        }
+    }
+
+    if (span_samples != nullptr && crossings >= 2u)
+        *span_samples = (uint32_t)idx_last - (uint32_t)idx_first;
+
+    return crossings;
 }
 
 uint16_t trigger_crossings(const uint16_t *samples, uint16_t count,
                            uint16_t level, scope_edge_t edge,
                            uint8_t hysteresis, uint32_t *span_samples)
 {
-    if (span_samples != nullptr)
-        *span_samples = 0u;
-    if (samples == nullptr || count < 2u)
-        return 0u;
+    return crossings_impl(samples, count, 1u, level, edge, hysteresis, span_samples);
+}
 
-    const uint16_t low  = (level > (uint16_t)hysteresis)
-                              ? (uint16_t)(level - hysteresis)
-                              : (uint16_t)0u;
-    const uint16_t high = (level < (uint16_t)(0x0FFFu - hysteresis))
-                              ? (uint16_t)(level + hysteresis)
-                              : (uint16_t)0x0FFFu;
+uint16_t trigger_crossings_strided(const uint16_t *samples, uint16_t count,
+                                   uint16_t stride, uint16_t level,
+                                   scope_edge_t edge, uint8_t hysteresis,
+                                   uint32_t *span_samples)
+{
+    return crossings_impl(samples, count, stride, level, edge, hysteresis,
+                          span_samples);
+}
 
-    bool armed = (edge == SCOPE_EDGE_RISING)
-                ? (samples[0] <= low)
-                : (samples[0] >= high);
+/* ------------------------------------------------------------------ */
+/* Digital bit-edge trigger (logic analyzer)                           */
+/* ------------------------------------------------------------------ */
 
-    uint16_t crossings = 0u;
-    uint16_t first     = 0u;
-    uint16_t last      = 0u;
+static inline bool logic_bit(const uint32_t *samples, uint16_t index, uint32_t mask)
+{
+    return (samples[index] & mask) != 0u;
+}
+
+uint16_t trigger_logic_find(const uint32_t *samples, uint16_t count,
+                            uint8_t channel, scope_edge_t edge)
+{
+    if (samples == nullptr || count < 2u || channel >= 8u)
+        return SCOPE_TRIGGER_NONE;
+
+    const uint32_t mask = (1u << channel);
+    bool prev = logic_bit(samples, 0u, mask);
 
     for (uint16_t i = 1u; i < count; ++i) {
-        const uint16_t cur = samples[i];
-        const bool crossed = (edge == SCOPE_EDGE_RISING)
-                                 ? (armed && cur >= level)
-                                 : (armed && cur <= level);
-
-        if (crossed) {
-            if (crossings == 0u)
-                first = i;
-            last = i;
-            ++crossings;
-            armed = false;
-        } else if (edge == SCOPE_EDGE_RISING) {
-            if (cur <= low)
-                armed = true;
+        const bool cur = logic_bit(samples, i, mask);
+        if (edge == SCOPE_EDGE_RISING) {
+            if (!prev && cur) return i;
         } else {
-            if (cur >= high)
-                armed = true;
+            if (prev && !cur) return i;
         }
+        prev = cur;
     }
+    return SCOPE_TRIGGER_NONE;
+}
 
-    if (crossings >= 2u && span_samples != nullptr)
-        *span_samples = (uint32_t)(last - first);
+uint16_t trigger_logic_crossings(const uint32_t *samples, uint16_t count,
+                                 uint8_t channel)
+{
+    if (samples == nullptr || count < 2u || channel >= 8u) return 0u;
 
+    const uint32_t mask = (1u << channel);
+    bool prev = logic_bit(samples, 0u, mask);
+    uint16_t crossings = 0;
+
+    for (uint16_t i = 1u; i < count; ++i) {
+        const bool cur = logic_bit(samples, i, mask);
+        if (!prev && cur) ++crossings;
+        prev = cur;
+    }
     return crossings;
 }

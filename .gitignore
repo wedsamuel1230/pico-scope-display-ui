@@ -5,3 +5,7 @@ cmake-build-*/
 *.o
 *.elf
 *.uf2
+
+# host test binaries (built by tests/host/Makefile)
+tests/host/test_frame_codec
+tests/host/test_capture

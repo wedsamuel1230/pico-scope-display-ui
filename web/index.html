@@ -1,62 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0d1117">
-  <meta name="description" content="Web UI for the RP2040 single-shot oscilloscope: Web Serial or a built-in demo simulator.">
+  <meta name="description" content="Browser UI for the Pico Scope Display UI firmware: a 3-channel ADC oscilloscope and an 8-channel logic analyzer over Web Serial, with a built-in simulator.">
   <title>Pico Scope Display UI</title>
-  <!-- GitHub Pages friendly: all paths relative (supports /repo/ subpaths) -->
   <link rel="stylesheet" href="css/scope.css">
 </head>
-<body>
+<body data-mode="scope">
+  <a class="skip-link" href="#scope-canvas">Skip to display</a>
+
   <header class="topbar">
-    <h1>SCOPE <span class="badge ch1">CH1</span></h1>
+    <h1>
+      <span id="hdr-mode">SCOPE</span>
+      <span id="hdr-badges" class="badges"></span>
+    </h1>
     <div class="actions">
-      <button id="btn-demo" type="button" class="primary"
-              title="Run the built-in simulator — no hardware needed">
-        Demo</button>
+      <button id="btn-demo" class="primary" type="button"
+              title="Run the built-in simulator — no hardware needed">Demo</button>
       <button id="btn-connect" type="button"
-              title="Connect to a Pico over Web Serial (Chrome, HTTPS)">
-        Connect</button>
-      <button id="btn-run" type="button" disabled
-              title="Start capturing">Run</button>
-      <button id="btn-stop" type="button" disabled
-              title="Stop capturing">Stop</button>
-      <button id="btn-disconnect" type="button" disabled
-              title="Close the connection">Disconnect</button>
+              title="Connect to a Pico over Web Serial (Chrome, HTTPS)">Connect</button>
+      <button id="btn-run" type="button" disabled>Run</button>
+      <button id="btn-stop" type="button" disabled>Stop</button>
+      <button id="btn-disconnect" type="button" disabled>Disconnect</button>
     </div>
     <div id="status" class="status" aria-live="polite">not connected</div>
   </header>
 
   <main>
-    <canvas id="scope-canvas" width="240" height="320" role="img"
-            aria-label="Oscilloscope waveform display, portrait 240 by 320">
-      Waveform display. Press Demo to see a simulated signal.
-    </canvas>
-    <section class="readouts" aria-label="Measurements">
-      <div class="tile"><span class="tile-label">FREQ</span>
-        <span id="m-freq" class="tile-value">—</span></div>
-      <div class="tile"><span class="tile-label">VPP</span>
-        <span id="m-vpp" class="tile-value">—</span></div>
-      <div class="tile"><span class="tile-label">RMS</span>
-        <span id="m-rms" class="tile-value">—</span></div>
-      <div class="tile"><span class="tile-label">RATE</span>
-        <span id="m-rate" class="tile-value">—</span></div>
+    <section class="config" aria-label="Capture settings">
+      <fieldset class="ctl">
+        <legend>Mode</legend>
+        <label><input type="radio" id="mode-scope" name="mode" value="scope" checked> Scope</label>
+        <label><input type="radio" id="mode-logic" name="mode" value="logic"> Logic</label>
+      </fieldset>
+
+      <fieldset class="ctl" id="ctl-channels">
+        <legend>ADC channels</legend>
+        <label><input type="checkbox" id="ch1" checked> CH1</label>
+        <label><input type="checkbox" id="ch2"> CH2</label>
+        <label><input type="checkbox" id="ch3"> CH3</label>
+      </fieldset>
+
+      <fieldset class="ctl">
+        <legend>Trigger</legend>
+        <label>Mode
+          <select id="trig-mode">
+            <option value="auto" selected>Auto</option>
+            <option value="normal">Normal</option>
+          </select>
+        </label>
+        <label>Edge
+          <select id="trig-edge">
+            <option value="rising" selected>Rising</option>
+            <option value="falling">Falling</option>
+          </select>
+        </label>
+        <label>Source
+          <select id="trig-channel"></select>
+        </label>
+      </fieldset>
+
+      <fieldset class="ctl" id="ctl-timing">
+        <legend>Timing</legend>
+        <label>Rate (S/s)
+          <input type="number" id="cfg-rate" min="1000" max="500000"
+                 step="1000" value="100000">
+        </label>
+        <label>Samples
+          <input type="number" id="cfg-count" min="64" max="2048"
+                 step="64" value="1024">
+        </label>
+        <button id="btn-apply" type="button" disabled>Apply</button>
+      </fieldset>
+
+      <p id="caps-line" class="caps">not connected</p>
     </section>
+
+    <canvas id="scope-canvas" width="240" height="320" role="img"
+            aria-label="Capture display: up to three oscilloscope traces, or eight stacked logic lanes, portrait 240 by 320">
+      Capture display. Measurements are listed below.
+    </canvas>
+
+    <section class="readouts" aria-label="Measurements">
+      <div class="tile">
+        <span class="tile-label" id="tile-label-1">FREQ</span>
+        <span id="m-freq" class="tile-value">—</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label" id="tile-label-2">VPP</span>
+        <span id="m-vpp" class="tile-value">—</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label" id="tile-label-3">RMS</span>
+        <span id="m-rms" class="tile-value">—</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label" id="tile-label-4">RATE</span>
+        <span id="m-rate" class="tile-value">—</span>
+      </div>
+    </section>
+
     <p id="sr-measurements" class="visually-hidden" aria-live="polite"></p>
+
     <p class="note">
-      <b>Demo</b> runs the deterministic simulator — identical binary frames,
-      no device needed. <b>Connect</b> uses Web Serial (Chromium browser over
-      HTTPS or localhost) to talk to a Pico.
+      <b>Demo</b> runs a deterministic simulator in the browser — no hardware.
+      <b>Connect</b> opens the real board over Web Serial (Chrome or Edge, HTTPS only).
+      There is no analog front end, so amplitudes are shown as raw 12-bit ADC codes
+      (<b>C/DIV</b>, never V/DIV) and every capture is flagged uncalibrated.
+      Logic-analyzer sample rates are nominal.
     </p>
   </main>
 
-  <!--
-    Plain (non-module) scripts for maximum hosting compatibility.
-    Load order matters: protocol -> serial -> plot -> app.
-  -->
   <script src="js/protocol.js"></script>
   <script src="js/serial.js"></script>
   <script src="js/plot.js"></script>

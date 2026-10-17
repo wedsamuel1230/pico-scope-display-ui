@@ -17,7 +17,9 @@
 #define COLOR_TRACE     0xAFE0u  /* lime-yellow                       */
 #define COLOR_TEXT      0xFFFFu  /* white                             */
 #define COLOR_TEXT_DIM  0x8410u  /* gray                              */
-#define COLOR_CH1       0xFC00u  /* amber                             */
+#define COLOR_CH1       0xFC00u  /* amber  - scope trace channel 1    */
+#define COLOR_CH2       0x07FFu  /* cyan   - scope trace channel 2    */
+#define COLOR_CH3       0xF81Fu  /* magenta- scope trace channel 3    */
 #define COLOR_RUN       0x07E0u  /* green                             */
 #define COLOR_TRIG      0xF800u  /* red                               */
 

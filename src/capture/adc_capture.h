@@ -1,38 +1,44 @@
 /**
- * adc_capture.h — single-shot ADC+DMA capture
+ * adc_capture.h — analog capture engine (ADC + DMA, round-robin)
+ *
+ * v2 captures 1..SCOPE_ADC_CHANNELS channels in a single pass. The
+ * enabled channels are converted round-robin; the interleaved FIFO
+ * stream is de-interleaved into a per-channel-interleaved output buffer.
  */
 #ifndef SCOPE_ADC_CAPTURE_H
 #define SCOPE_ADC_CAPTURE_H
 
 #include <stdint.h>
+
 #include "scope_config.h"
 
 typedef enum {
     ADC_CAP_OK = 0,
     ADC_CAP_TIMEOUT,
     ADC_CAP_FIFO_OVERFLOW,
-    ADC_CAP_NOT_INIT,
+    ADC_CAP_NOT_INIT
 } adc_capture_status_t;
 
-/* Configure ADC GPIO/DMA channel. Must be called once before start().  */
-void        adc_capture_init(void);
+void adc_capture_init(void);
 
-/* Set the requested sample rate (used for the next start()).           */
-void        adc_capture_set_rate(uint32_t requested_rate);
+/** Total ADC conversion rate. Per-channel rate = total / channels. */
+void adc_capture_set_rate(uint32_t requested_rate);
 
-/* Programme ADC+DMA to capture `count` samples (<= SCOPE_MAX_SAMPLE_COUNT)
- * into `dst`. Reused buffers are fine; no float in the capture loop.
- * The rate applied is the one set by adc_capture_set_rate().            */
-void        adc_capture_start(uint16_t *dst, uint16_t count);
+/** Number of enabled channels in `channel_mask` (bit 0 = ADC0). */
+uint8_t adc_capture_channels_for_mask(uint8_t channel_mask);
 
-/* Block until DMA finishes (or timeout). adc_capture_start() must have
- * been called. Returns ADC_CAP_OK / TIMEOUT / FIFO_OVERFLOW              */
+/**
+ * Arm a capture of `count` samples PER enabled channel. `dst` must be
+ * able to hold count * enabled_channels uint16_t values (interleaved as
+ * dst[sample * channels + slot]).
+ */
+void adc_capture_start(uint16_t *dst, uint16_t count, uint8_t channel_mask);
+
 adc_capture_status_t adc_capture_wait(void);
+void adc_capture_abort(void);
 
-/* Abort any in-flight capture (STOP handling) and clear ADC FIFO.       */
-void        adc_capture_abort(void);
-
-/* Report actual applied rate for last completed capture (Hz).           */
-uint32_t    adc_capture_actual_rate(void);
+uint32_t adc_capture_actual_rate(void);   /* total ADC rate, Hz   */
+uint32_t adc_capture_channel_rate(void);  /* per-channel rate, Hz */
+uint8_t  adc_capture_last_channels(void);
 
 #endif /* SCOPE_ADC_CAPTURE_H */

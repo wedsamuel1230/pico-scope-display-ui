@@ -1,82 +1,93 @@
 /**
- * message_protocol.h — wire-level payload layouts for protocol v1
+ * message_protocol.h — wire payload layouts (protocol v2)
  *
- * Shared by firmware (src/protocol/) and mirrored on the browser in
- * web/js/protocol.js. Both sides ~MUST~ keep field order/width in sync
- * with docs/PROTOCOL_V1.md. All multi-byte fields are little-endian.
- * CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection) runs
- * over the UNENCODED header+payload.
- *
- * Frame:  COBS( hdr: version u8 | type u8 | seq u16 | plen u16
- *               payload: plen bytes
- *               crc16 ) 0x00
+ * The wire structs are packed so their sizeof() equals the exact number
+ * of bytes on the wire; usb_link.cpp memcpy()s them straight out of a
+ * decoded payload. See docs/PROTOCOL_V2.md for the field-by-field table.
  */
 #ifndef SCOPE_MESSAGE_PROTOCOL_H
 #define SCOPE_MESSAGE_PROTOCOL_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-#define SCOPE_PROTO_HDR_LEN 6u /* version+type+seq+plen */
+#include "scope_config.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ---- frame header (6 B) ------------------------------------------- */
-typedef struct {
+#if defined(__GNUC__)
+#define SCOPE_PACKED __attribute__((packed))
+#else
+#define SCOPE_PACKED
+#endif
+
+/* Frame header: version u8 | type u8 | seq u16 | plen u16 (6 bytes).   */
+typedef struct SCOPE_PACKED {
     uint8_t  version;
     uint8_t  type;
     uint16_t seq;
     uint16_t plen;
 } scope_msg_header_t;
 
-/* ---- HELLO_RSP payload (12 B) ------------------------------------- */
-typedef struct {
+/* HELLO_RSP — 14 bytes */
+typedef struct SCOPE_PACKED {
     uint32_t firmware_version;
     uint32_t capabilities;
     uint16_t max_sample_count;
-    uint8_t  voltage_range;   /* 0 = raw codes (no AFE / calibration)   */
-    uint8_t  calibration;     /* 0 = not calibrated                     */
+    uint8_t  voltage_range;
+    uint8_t  calibration;
+    uint8_t  analog_channels;
+    uint8_t  logic_channels;
 } scope_hello_rsp_t;
 
-/* ---- SET_CONFIG payload (10 B) ------------------------------------ */
-typedef struct {
-    uint32_t sample_rate;    /* requested, clamped by firmware          */
-    uint16_t sample_count;   /* requested, clamped                      */
-    uint16_t trigger_level;  /* raw ADC code                            */
-    uint8_t  edge;           /* 0 = rising, 1 = falling                 */
-    uint8_t  mode;           /* 0 = AUTO, 1 = NORMAL                    */
+/* SET_CONFIG — 13 bytes */
+typedef struct SCOPE_PACKED {
+    uint32_t sample_rate;
+    uint16_t sample_count;
+    uint16_t trigger_level;
+    uint8_t  edge;            /* scope_edge_t                          */
+    uint8_t  trigger_mode;    /* scope_trig_mode_t                     */
+    uint8_t  capture_mode;    /* scope_capture_mode_t                  */
+    uint8_t  channel_mask;    /* SCOPE: ADC bitmask; LOGIC: lane mask   */
+    uint8_t  trigger_channel; /* SCOPE: ADC bit; LOGIC: 0..7; 0xFF none */
 } scope_set_config_t;
 
-/* ---- ACK payload (9 B) -------------------------------------------- */
-typedef struct {
+/* ACK — 9 bytes */
+typedef struct SCOPE_PACKED {
     uint16_t request_seq;
-    uint8_t  status;           /* SCOPE_ACK_*                           */
-    uint32_t applied_rate;     /* actual applied sample rate            */
+    uint8_t  status;
+    uint32_t applied_rate;
     uint16_t applied_count;
 } scope_ack_t;
 
-/* ---- CAPTURE_DATA payload (9 + 2*count B) -------------------------- */
-typedef struct {
-    uint32_t rate;          /* ACTUAL applied sample rate               */
-    uint16_t count;         /* number of samples in this frame          */
-    uint16_t trigger_index; /* 0xFFFF = none (AUTO/no trigger)          */
-    uint8_t  flags;         /* SCOPE_FLAG_* bits                        */
-    /* samples u16[] follow in the payload                                */
+/* CAPTURE_DATA head — 11 bytes; samples follow.
+ *
+ * SCOPE mode: `count` samples PER CHANNEL and `channels` enabled analog
+ * channels follow interleaved as count * channels u16 ADC codes.
+ * LOGIC mode: `count` samples follow, one u16 each, low byte = the 8
+ * digital lines (bit 0 = the first logic GPIO).                      */
+typedef struct SCOPE_PACKED {
+    uint32_t rate;   /* SCOPE: per-channel rate; LOGIC: lane rate      */
+    uint16_t count;
+    uint16_t trigger_index;
+    uint8_t  flags;
+    uint8_t  channels;
+    uint8_t  mode;   /* scope_capture_mode_t                           */
 } scope_capture_data_t;
 
-/* ---- ERROR payload (3 + strlen(detail)) --------------------------- */
+/* ERROR (host-only convenience struct; not memcpy'd from the wire).   */
 typedef struct {
-    uint16_t seq;
-    uint8_t  code;    /* SCOPE_ERR_*                                 */
-    const char *detail; /* ASCII, sender copies WITHOUT terminator   */
+    uint16_t    seq;
+    uint8_t     code;
+    const char *detail;
 } scope_error_t;
 
-/* CRC-16/CCITT-FALSE over the raw header+payload bytes                */
 uint16_t scope_crc16(const uint8_t *data, size_t len);
 
 #ifdef __cplusplus
 }
 #endif
+
 #endif /* SCOPE_MESSAGE_PROTOCOL_H */

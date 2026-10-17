@@ -1,9 +1,11 @@
 /**
- * plot.js — canvas waveform rendering (mirror of src/display/scope_view)
+ * plot.js — canvas rendering (mirror of src/display/scope_view)
  *
- * Portrait 240x320 instrument face:
- *   header (SCOPE / CH1 / RUN|STOP), 8x6 graticule, scale row, state row.
- * Trace uses per-column min/max downsampling, bottom = code 0.
+ * Portrait 240x320 instrument face, two modes:
+ *   SCOPE — header, 8x6 graticule, up to 3 overlaid ADC traces
+ *           (CH1 amber / CH2 cyan / CH3 magenta), scale + state rows.
+ *   LOGIC — header, 8 stacked digital lanes D0..D7, scale + state rows.
+ * Traces use per-column min/max downsampling, bottom = code 0.
  * The canvas is the only measurement-free face: readings live in the DOM.
  */
 "use strict";
@@ -16,6 +18,10 @@ const ScopePlot = (() => {
   const SCALE_Y = 262, SCALE_H = 16;
   const STATE_Y = 280, STATE_H = 18;
 
+  const LANES = 8;
+  const LANE_H = Math.floor(WAVE_H / LANES);   /* 30 */
+  const LANE_LABEL_W = 14;
+
   const C = {
     bg: "#000",
     grid: "#26323f",
@@ -26,6 +32,15 @@ const ScopePlot = (() => {
     err: "#ff5252",
     trace: "#c9e94f",
   };
+
+  /* channel colours, matching COLOR_CH1/2/3 in src/display/st7789.h.
+     CH1 amber 0xFC00, CH2 cyan 0x07FF, CH3 magenta 0xF81F.            */
+  const CH_COLOR = ["#fc8c00", "#00d4ff", "#ff4fd8"];
+  const CH_NAME = ["CH1", "CH2", "CH3"];
+
+  /* digital lane colours (web only; the LCD uses one colour for logic)  */
+  const LANE_COLOR = ["#ffd23f", "#4fd1ff", "#7ee787", "#ff9f68",
+                      "#c792ea", "#f78c6c", "#89ddff", "#ffe082"];
 
   function fitCanvas(canvas) {
     /* keep the 240:320 ratio exactly; render at an integer device scale
@@ -62,32 +77,38 @@ const ScopePlot = (() => {
     ctx.stroke();
   }
 
-  const TRIG_COL = Math.round(W / 8); /* trigger sits ~1/8 from left      */
+  /* ---- SCOPE: overlaid analog traces ------------------------------- */
+  const TRIG_COL = Math.round(W / 8); /* trigger sits ~1/8 from left */
 
-  function drawTrace(ctx, samples, triggerIndex) {
-    if (!samples || samples.length === 0) return;
-    const n = samples.length;
+  function drawTrace(ctx, samples, channels, slot, triggerIndex, color) {
+    if (!samples || channels < 1) return;
+    const n = Math.floor(samples.length / channels);
+    if (n < 2) return;
+
     /* Rotate the column mapping so the trigger sample always lands on a
        fixed column — otherwise every capture starts at a different phase
-       and the trace shimmers. Pre-trigger samples fill the lead columns.  */
+       and the trace shimmers. Pre-trigger samples fill the lead columns. */
     const hasTrig = triggerIndex != null && triggerIndex !== 0xFFFF;
     const delta = hasTrig
       ? Math.floor(triggerIndex * W / n) - TRIG_COL
       : 0;
+
     const colMin = new Float64Array(W).fill(Infinity);
     const colMax = new Float64Array(W).fill(-Infinity);
     for (let i = 0; i < n; i++) {
       const c = Math.floor(i * W / n) - delta;
       if (c < 0 || c >= W) continue;
-      const v = samples[i];
+      const v = samples[i * channels + slot];
       if (v < colMin[c]) colMin[c] = v;
       if (v > colMax[c]) colMax[c] = v;
     }
-    ctx.strokeStyle = C.trace;
-    ctx.lineWidth = 1;
+
     const yOf = (v) => WAVE_Y + WAVE_H - 1 - v * (WAVE_H - 1) / 4095;
 
-    /* Vertical min/max connectors — preserve glitches within a column.    */
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+
+    /* vertical min/max connectors keep glitches inside a column        */
     ctx.beginPath();
     for (let c = 0; c < W; c++) {
       if (!isFinite(colMin[c])) continue;
@@ -96,8 +117,8 @@ const ScopePlot = (() => {
     }
     ctx.stroke();
 
-    /* Upper and lower envelopes joined across columns, so the trace reads
-       as one continuous waveform instead of isolated vertical bars.      */
+    /* upper and lower envelopes joined across columns, so each trace
+       reads as one continuous waveform rather than isolated bars        */
     for (const pick of [colMax, colMin]) {
       ctx.beginPath();
       let started = false;
@@ -108,25 +129,113 @@ const ScopePlot = (() => {
       }
       ctx.stroke();
     }
-    /* trigger marker: amber tick at the (now fixed) trigger column      */
+  }
+
+  function drawTrigMarker(ctx) {
+    ctx.fillStyle = C.amber;
+    ctx.fillRect(TRIG_COL, WAVE_Y, 1, 6);
+  }
+
+  /* ---- LOGIC: stacked digital lanes -------------------------------- */
+  /* `samples[i] & 0xFF` holds D0 in bit 0 .. D7 in bit 7 — the same
+     masking rule the firmware applies before display or transmit.      */
+  function drawLogic(ctx, samples, count, triggerIndex, running) {
+    if (!samples || samples.length === 0) return;
+    const n = Math.min(count || samples.length, samples.length);
+    if (n < 2) return;
+
+    const hasTrig = triggerIndex != null && triggerIndex !== 0xFFFF;
+    const delta = hasTrig
+      ? Math.floor(triggerIndex * W / n) - TRIG_COL
+      : 0;
+
+    ctx.font = "8px monospace";
+    ctx.textBaseline = "middle";
+
+    for (let lane = 0; lane < LANES; lane++) {
+      const yTop = WAVE_Y + lane * LANE_H;
+
+      /* lane separator + label */
+      ctx.strokeStyle = C.grid;
+      ctx.lineWidth = 0.75;
+      ctx.beginPath();
+      ctx.moveTo(0, yTop + LANE_H - 0.5);
+      ctx.lineTo(W, yTop + LANE_H - 0.5);
+      ctx.stroke();
+
+      ctx.fillStyle = C.dim;
+      ctx.fillText("D" + lane, 1, yTop + LANE_H / 2);
+
+      /* build the level per displayed column                       */
+      const mask = 1 << lane;
+      const yHi = yTop + 5;
+      const yLo = yTop + LANE_H - 6;
+
+      ctx.strokeStyle = LANE_COLOR[lane];
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+
+      let seen = false;
+      let prevY = yLo;
+      let prevHigh = false;
+      for (let c = 0; c < W; c++) {
+        const i = Math.round((c + delta) * n / W);
+        const idx = Math.max(0, Math.min(n - 1, i));
+        const high = (samples[idx] & mask) !== 0;
+        const y = high ? yHi : yLo;
+
+        if (!seen) {
+          ctx.moveTo(c + 0.5, y);
+          seen = true;
+        } else {
+          if (high !== prevHigh) {
+            /* vertical edge at the transition column */
+            ctx.lineTo(c + 0.5, prevY);
+            ctx.lineTo(c + 0.5, y);
+          } else {
+            ctx.lineTo(c + 0.5, y);
+          }
+        }
+        prevY = y;
+        prevHigh = high;
+      }
+      ctx.stroke();
+    }
+
     if (hasTrig) {
       ctx.fillStyle = C.amber;
-      ctx.fillRect(TRIG_COL, WAVE_Y, 1, 6);
+      ctx.fillRect(TRIG_COL, WAVE_Y, 1, WAVE_H);
     }
   }
 
-  function drawHeader(ctx, running) {
+  /* ---- chrome ------------------------------------------------------ */
+  function drawHeader(ctx, mode, channelMask, running) {
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, HEADER_H);
     ctx.font = "10px monospace";
     ctx.textBaseline = "middle";
     const cy = HEADER_H / 2;
+
     ctx.fillStyle = C.text;
-    ctx.fillText("SCOPE", 4, cy);
-    ctx.fillStyle = C.amber;
-    ctx.fillText("CH1", 96, cy);
+    if (mode === ScopeProto.MODE.LOGIC) {
+      ctx.fillText("LOGIC", 4, cy);
+      let bits = 0;
+      for (let i = 0; i < 8; i++) if (channelMask & (1 << i)) bits++;
+      ctx.fillStyle = C.dim;
+      ctx.fillText(bits + "CH", 60, cy);
+    } else {
+      ctx.fillText("SCOPE", 4, cy);
+      let x = 60;
+      for (let ch = 0; ch < CH_NAME.length; ch++) {
+        if (!(channelMask & (1 << ch))) continue;
+        ctx.fillStyle = CH_COLOR[ch];
+        ctx.fillText(CH_NAME[ch], x, cy);
+        x += 34;
+      }
+    }
+
     ctx.fillStyle = running ? C.green : C.amber;
-    ctx.fillText(running ? "RUN" : "STOP", 200, cy);
+    ctx.fillText(running ? "RUN" : "STOP", 196, cy);
   }
 
   function fmtTime(sec) {
@@ -136,24 +245,34 @@ const ScopePlot = (() => {
     return (sec * 1e9).toFixed(0) + " ns";
   }
 
-  function drawScaleRow(ctx, rate, count, flags) {
+  function fmtRate(r) {
+    if (!r) return "--";
+    if (r >= 1e6) return (r / 1e6).toFixed(r % 1e6 ? 2 : 0) + " MS/s";
+    if (r >= 1e3) return (r / 1e3).toFixed(r % 1e3 ? 1 : 0) + " kS/s";
+    return r + " S/s";
+  }
+
+  function drawScaleRow(ctx, mode, rate, count, channels) {
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, SCALE_Y, W, SCALE_H);
     ctx.font = "9px monospace";
     ctx.textBaseline = "middle";
     const cy = SCALE_Y + SCALE_H / 2;
+
     /* 4095 codes over 6 vertical divisions. Only name volts once the ADC
-       path is calibrated — with no AFE we must show codes.              */
-    const raw = !!((flags || 0) & ScopeProto.FLAGS.NOT_CALIB);
+       path is calibrated — with no AFE we must show codes.             */
     ctx.fillStyle = C.dim;
-    ctx.fillText(raw ? "C/DIV" : "V/DIV", 4, cy);
+    ctx.fillText(mode === ScopeProto.MODE.LOGIC ? "RATE" : "C/DIV RAW", 4, cy);
     ctx.fillStyle = C.text;
-    ctx.fillText(raw ? "683" : "0.55 V", 36, cy);
+    ctx.fillText(mode === ScopeProto.MODE.LOGIC ? fmtRate(rate) : "683",
+                 mode === ScopeProto.MODE.LOGIC ? 40 : 66, cy);
+
     ctx.fillStyle = C.dim;
-    ctx.fillText("T/DIV", 120, cy);
+    ctx.fillText("T/DIV", 130, cy);
     ctx.fillStyle = C.text;
-    const tdiv = (rate > 0 && count > 0) ? (count / rate) / 8 : 0;
-    ctx.fillText(tdiv > 0 ? fmtTime(tdiv) : "--", 152, cy);
+    const n = mode === ScopeProto.MODE.LOGIC ? count : count;
+    const tdiv = (rate > 0 && n > 0) ? (n / rate) / 8 : 0;
+    ctx.fillText(tdiv > 0 ? fmtTime(tdiv) : "--", 166, cy);
   }
 
   function drawStateRow(ctx, flags, running) {
@@ -185,38 +304,88 @@ const ScopePlot = (() => {
     ctx.textAlign = "left";
   }
 
-  /* opts: { samples, rate, count, running, flags, triggerIndex, message } */
+  /* Slots in the interleaved SCOPE buffer follow the channel_mask bit
+     order, exactly like adc_slot_for_channel() in the firmware.         */
+  function slotsForMask(mask) {
+    const slots = [];
+    for (let ch = 0; ch < CH_NAME.length; ch++) {
+      if (mask & (1 << ch)) slots.push(ch);
+    }
+    return slots;
+  }
+
+  /* opts: { mode, channelMask, samples, rate, count, channels, running,
+            flags, triggerIndex, message } */
   function drawAll(ctx, opts) {
     const o = opts || {};
+    const mode = o.mode === ScopeProto.MODE.LOGIC
+      ? ScopeProto.MODE.LOGIC : ScopeProto.MODE.SCOPE;
+    const mask = o.channelMask === undefined
+      ? (mode === ScopeProto.MODE.LOGIC ? 0xFF : 0x01) : o.channelMask;
+
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
-    drawHeader(ctx, !!o.running);
-    drawGrid(ctx);
-    if (o.samples && o.samples.length) {
-      drawTrace(ctx, o.samples, o.triggerIndex);
+    drawHeader(ctx, mode, mask, !!o.running);
+
+    if (mode === ScopeProto.MODE.LOGIC) {
+      clearWave(ctx);
+      drawGrid(ctx);
+      if (o.samples && o.samples.length) {
+        drawLogic(ctx, o.samples, o.count, o.triggerIndex, !!o.running);
+      } else {
+        drawEmpty(ctx, o.message || "No signal — press Demo");
+      }
     } else {
-      drawEmpty(ctx, o.message || "No signal — press Demo");
+      drawGrid(ctx);
+      if (o.samples && o.samples.length && o.channels >= 1) {
+        const slots = slotsForMask(mask);
+        for (const ch of slots) {
+          drawTrace(ctx, o.samples, o.channels, ch, o.triggerIndex,
+                    CH_COLOR[ch]);
+        }
+        if (o.triggerIndex != null && o.triggerIndex !== 0xFFFF) {
+          drawTrigMarker(ctx);
+        }
+      } else {
+        drawEmpty(ctx, o.message || "No signal — press Demo");
+      }
     }
-    drawScaleRow(ctx, o.rate || 0, o.count || 0, o.flags || 0);
+
+    drawScaleRow(ctx, mode, o.rate || 0, o.count || 0, o.channels || 1);
     drawStateRow(ctx, o.flags || 0, !!o.running);
   }
 
   function drawTraceOnly(ctx, opts) {
-    /* cheap per-frame path: repaint wave area, grid, then trace        */
+    /* cheap per-frame path: repaint wave area, grid, then traces        */
     clearWave(ctx);
     drawGrid(ctx);
     const o = opts || {};
-    if (o.samples && o.samples.length) {
-      drawTrace(ctx, o.samples, o.triggerIndex);
+    if (o.mode === ScopeProto.MODE.LOGIC) {
+      if (o.samples && o.samples.length) {
+        drawLogic(ctx, o.samples, o.count, o.triggerIndex, !!o.running);
+      } else {
+        drawEmpty(ctx, o.message || "No signal — press Demo");
+      }
+      return;
+    }
+    if (o.samples && o.samples.length && o.channels >= 1) {
+      const mask = o.channelMask === undefined ? 0x01 : o.channelMask;
+      for (const ch of slotsForMask(mask)) {
+        drawTrace(ctx, o.samples, o.channels, ch, o.triggerIndex,
+                  CH_COLOR[ch]);
+      }
+      if (o.triggerIndex != null && o.triggerIndex !== 0xFFFF) {
+        drawTrigMarker(ctx);
+      }
     } else {
       drawEmpty(ctx, o.message || "No signal — press Demo");
     }
   }
 
   return {
-    W, H,
+    W, H, CH_COLOR, CH_NAME, LANE_COLOR,
     fitCanvas, drawAll, drawTraceOnly,
-    drawTrace, drawGrid, clearWave, drawHeader,
-    drawScaleRow, drawStateRow,
+    drawTrace, drawGrid, clearWave, drawHeader, drawLogic,
+    drawScaleRow, drawStateRow, slotsForMask,
   };
 })();

@@ -7,9 +7,17 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Returns pointer to a 5-byte glyph (column-major, LSB=top row) or
  * nullptr for characters outside the supported subset (caller draws
  * nothing or a fallback box).                                          */
 const uint8_t *font5x7_glyph(char c);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* SCOPE_ST7789_FONT_H */

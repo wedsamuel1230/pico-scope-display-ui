@@ -1,54 +1,76 @@
 /**
- * scope_view.h — oscilloscope screen composition (240x320 portrait)
+ * scope_view.h — on-LCD screen composition (protocol v2)
  *
- * Layout (PROMPT-240x320-v2.md concept):
- *   y  0..17   header   : 'SCOPE' + CH1(amber) + RUN(green)
- *   y 18..259  graticule: 8 x 6 divisions (30 x 40 px), blue-gray grid
- *   y 260..277 scale row : V/div / us/div
- *   y 278..299 tiles    : FREQ / VPP readouts
- *   y 300..319 soft keys: AUTO / TRIG / MENU
+ * Layout (240x320 portrait ST7789):
+ *   y   0..17  header: mode, channel badges, RUN/STOP
+ *   y  18..259 wave raster: SCOPE = overlaid traces, LOGIC = 8 lanes
+ *   y 261..277 scale row: C/DIV RAW (no AFE, so codes not volts)
+ *   y 279..291 measurement tiles
+ *   y 300..318 soft keys
  *
- * Drawing model per IMPLEMENTATION_GUIDE.md: clear waveform area only,
- * fixed grid is NOT redrawn each frame (grid is stamped at init and
- * trace clears only the previous trace columns).
+ * The font covers ASCII 0x20..0x5A only, so every label here must be
+ * UPPERCASE.
  */
 #ifndef SCOPE_SCOPE_VIEW_H
 #define SCOPE_SCOPE_VIEW_H
 
-#include <stdint.h>
 #include <stdbool.h>
-#include "scope_config.h"
+#include <stdint.h>
+
 #include "measurements.h"
+#include "scope_config.h"
+#include "scope_types.h"
 
-/* --- geometry ------------------------------------------------------- */
-#define SV_HEADER_Y       0u
-#define SV_HEADER_H       18u
-#define SV_WAVE_Y         18u
-#define SV_WAVE_H         242u   /* 6 divisions x 40 px + 2             */
-#define SV_WAVE_X         0u
-#define SV_WAVE_W         240u   /* 8 divisions x 30 px                 */
-#define SV_SCALE_Y        261u
-#define SV_SCALE_H        17u
-#define SV_TILES_Y        279u
-#define SV_TILES_H        13u
-#define SV_SOFTKEY_Y      300u
-#define SV_SOFTKEY_H      19u
+/* ---- geometry ------------------------------------------------------- */
+#define SV_HEADER_Y   0u
+#define SV_HEADER_H   18u
+#define SV_WAVE_Y     18u
+#define SV_WAVE_H     242u
+#define SV_WAVE_X     0u
+#define SV_WAVE_W     240u
+#define SV_SCALE_Y    261u
+#define SV_SCALE_H    17u
+#define SV_TILES_Y    279u
+#define SV_TILES_H    13u
+#define SV_SOFTKEY_Y  300u
+#define SV_SOFTKEY_H  19u
+#define SV_DIV_W      30u
+#define SV_DIV_H      40u
 
-#define SV_DIV_W          30u
-#define SV_DIV_H          40u
+/* Logic lanes: 8 lanes stacked inside the wave raster.                */
+#define SV_LOGIC_LANES    SCOPE_LOGIC_CHANNELS
+#define SV_LOGIC_LANE_H   (SV_WAVE_H / SV_LOGIC_LANES) /* 30 px           */
+#define SV_LOGIC_LABEL_W  12u                          /* lane label gutter */
 
-/* Draw whole static chrome (header/grid/scales/soft keys). Once.       */
-void scope_view_draw_chrome(void);
+/* ---- lifecycle ------------------------------------------------------ */
+void scope_view_init(void);
 
-/* Clear only the waveform raster area (background, no grid).           */
-void scope_view_clear_wave(void);
+/**
+ * Repaint the static chrome and the header. Call on boot and whenever
+ * the mode or the enabled channels change (the wave raster is cleared).
+ */
+void scope_view_draw_chrome(scope_capture_mode_t mode, uint8_t channel_mask,
+                            bool running);
 
-/* Stamp graticule divisions into the cleared wave area.                */
-void scope_view_draw_grid(void);
+/** Repaint only the RUN/STOP indicator. */
+void scope_view_set_running(bool running);
 
-/* Plot the waveform: per-column min/max downsample (240 columns).
- * Samples map linearly; sweep bottom->top. `grid` = redraw grid too.   */
-void scope_view_draw_trace(const uint16_t *samples, uint16_t count,
-                           bool redraw_grid);
+/** Clear the wave raster, redraw the grid and overlay all enabled
+ * analog traces. `samples` is count * channels interleaved; slot order
+ * follows the enabled bits of `channel_mask` (bit 0 = ADC0).           */
+void scope_view_draw_scope(const uint16_t *samples, uint16_t count,
+                           uint8_t channels, uint8_t channel_mask);
+
+/** Clear the wave raster, draw the 8 lane separators and the lane
+ * waveforms. `samples[i]` is a 32-bit PIO pin snapshot; bits 7:0 are
+ * the logic lines. `lane_mask` selects which lanes are drawn.         */
+void scope_view_draw_logic(const uint32_t *samples, uint16_t count,
+                           uint8_t lane_mask);
+
+/** Repaint the scale row and the measurement tiles. `per_channel` holds
+ * one entry per slot in the enabled order of `channel_mask`.          */
+void scope_view_draw_measurements(const scope_measurements_t *per_channel,
+                                  uint8_t channels, uint8_t channel_mask,
+                                  uint32_t rate);
 
 #endif /* SCOPE_SCOPE_VIEW_H */
