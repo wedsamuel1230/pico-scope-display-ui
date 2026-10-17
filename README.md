@@ -19,8 +19,9 @@ and an optional Web Serial UI. Driver docs: `docs/`.
   demo simulator transport (identical binary frames, no device needed)
   and tests in the browser via `js/protocol.js`
 - `tests/host/` — COBS/CRC host test bench (`make test`, 18 checks)
-- `docs/` — implementation guides, protocol spec, reference notes
+- `docs/` — implementation guides, protocol spec, wiring guide, reference notes
 - `hardware/rev-a/` — carrier-board stub pin table
+- `.github/workflows/pages.yml` — publishes `web/` to GitHub Pages
 
 ## Build & test
 
@@ -29,6 +30,20 @@ pio run -e pico              # firmware → .pio/build/pico/*.uf2
 cd tests/host && make test   # frame codec host tests (all 18 pass)
 ```
 
-Web UI: serve `web/` from any HTTPS static host (GitHub Pages has
-exactly these 7 files referenced with relative paths); open
-`index.html`, click **Demo** (simulator) or **Connect** (Web Serial).
+## Hardware
+
+Wiring the Pico to the ST7789 panel and the three buttons is documented
+pin-by-pin in [`docs/WIRING_GUIDE.md`](docs/WIRING_GUIDE.md). Read the
+safety notes first: the LCD is 3.3 V only, and the ADC input is uncalibrated
+and unprotected in v1.
+
+## Web UI
+
+Serve `web/` from any HTTPS static host (all six files use relative paths,
+so a `/repo/` subpath works). Open `index.html`, then click **Demo** for the
+built-in simulator — no hardware needed, byte-identical protocol frames — or
+**Connect** to talk to a Pico over Web Serial.
+
+GitHub Pages deployment is automated by `.github/workflows/pages.yml`, which
+uploads `web/` on every push to `main` that touches it. Enable it once under
+**Settings → Pages → Source: GitHub Actions**.

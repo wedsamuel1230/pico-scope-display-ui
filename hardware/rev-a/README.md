@@ -19,6 +19,7 @@ in `include/board_config.h`:
 | LED      | 25   | on-board |
 
 Bring-up notes:
-- stk7789 240x320 SPI panels commonly label GND/VCC(3.3V)/SCL/SDA/RES/DC/CS/BLK.
+- ST7789 240x320 SPI panels commonly label GND/VCC(3.3V)/SCL/SDA/RES/DC/CS/BLK.
+  Full wiring instructions: `docs/WIRING_GUIDE.md`.
 - Power LCD from 3V3 (never 5V) for IO-level safety.
 - Update this table before fab; board_config.h is the single source.
