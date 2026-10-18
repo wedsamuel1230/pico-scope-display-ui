@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — Pico Scope</title>
+<meta name="description" content="Pinout, protocol v2 and build instructions for the Pico Scope browser oscilloscope.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230a0a0c'/%3E%3Cpath%20d='M4%2020c3-11%206-11%209%200s6%2011%209%200'%20fill='none'%20stroke='%232997ff'%20stroke-width='2.4'%20stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/scope.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main">Skip to the docs</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="wordmark" href="index.html">PICO SCOPE</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a class="nav-link" href="index.html">Home</a>
+      <a class="nav-link" href="console.html">Console</a>
+      <a class="nav-link" href="docs.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="theme-btn" id="btn-theme" type="button" aria-label="Switch to light theme" title="Switch theme">
+        <span id="btn-theme-icon">
+          <svg class="i-moon" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.4 9.7A5.8 5.8 0 0 1 6.3 2.6 6 6 0 1 0 13.4 9.7Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <svg class="i-sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.1"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1"/></svg>
+        </span>
+      </button>
+      <a class="pill pill--accent pill--xs" href="console.html">Open the console</a>
+    </div>
+  </div>
+</header>
+
+<main class="sheet" id="main">
+
+  <section class="section section--intro">
+    <div class="wrap">
+      <p class="eyebrow">DOCUMENTATION</p>
+      <h1 class="h2">Wire it, then talk to it.</h1>
+      <p class="section-sub">Everything the browser sends is a documented binary frame. Here is the pinout, the protocol and the build.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow eyebrow--sub">QUICK START</p>
+      <div class="steps">
+        <article class="step">
+          <span class="step-num">01</span>
+          <h3 class="step-title">WIRE</h3>
+          <p>Signal into GPIO26 (ADC0), grounds tied together. A 1 kΩ + 10 µF low-pass turns PWM into something the ADC can read.</p>
+        </article>
+        <article class="step">
+          <span class="step-num">02</span>
+          <h3 class="step-title">FLASH</h3>
+          <p>Build and upload the Pico SDK firmware, then check that the browser sees the handshake.</p>
+        </article>
+        <article class="step">
+          <span class="step-num">03</span>
+          <h3 class="step-title">CONNECT</h3>
+          <p>Open the console in Chrome or Edge, pick the Pico serial port, press Run — connecting alone streams nothing.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow eyebrow--sub">WIRING</p>
+      <div class="doc-card">
+        <div class="doc-grid">
+          <div class="doc-col">
+            <h3 class="doc-title">ANALOG INPUTS</h3>
+            <p class="doc-note">Raw 12-bit codes, 0 to 4095. No attenuation stage in front of the ADC.</p>
+            <table class="doc-table">
+              <thead><tr><th>PIN</th><th>ADC</th><th>CHANNEL</th></tr></thead>
+              <tbody>
+                <tr><td>GPIO26</td><td>ADC0</td><td class="tone-amber">CH 1</td></tr>
+                <tr><td>GPIO27</td><td>ADC1</td><td class="tone-cyan">CH 2</td></tr>
+                <tr><td>GPIO28</td><td>ADC2</td><td class="tone-magenta">CH 3</td></tr>
+                <tr><td>GND</td><td>—</td><td>must be common</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="doc-col">
+            <h3 class="doc-title">LOGIC LANES</h3>
+            <p class="doc-note">All eight lanes are always captured together in logic mode.</p>
+            <table class="doc-table">
+              <thead><tr><th>LANE</th><th>PIN</th><th>STATE</th></tr></thead>
+              <tbody>
+                <tr><td>D0</td><td>GPIO5</td><td class="tone-cyan">nominal</td></tr>
+                <tr><td>D1</td><td>GPIO6</td><td></td></tr>
+                <tr><td>D2</td><td>GPIO7</td><td></td></tr>
+                <tr><td>D3</td><td>GPIO8</td><td></td></tr>
+              </tbody>
+            </table>
+            <p class="doc-note">lanes 0–7 · GPIO5–GPIO12 · 10 MS/s nominal</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow eyebrow--sub">PROTOCOL V2</p>
+      <h2 class="h2">A frame on the wire</h2>
+      <div class="doc-card">
+        <div class="frame-diagram" role="img" aria-label="Frame layout: one version byte, one type byte, a two-byte sequence, a two-byte payload length, the payload, then a two-byte CRC.">
+          <span class="frame-field"><b>VER</b><i>1 B</i></span>
+          <span class="frame-field"><b>TYPE</b><i>1 B</i></span>
+          <span class="frame-field"><b>SEQ</b><i>2 B</i></span>
+          <span class="frame-field"><b>PLEN</b><i>2 B</i></span>
+          <span class="frame-field frame-field--wide"><b>PAYLOAD</b><i>PLEN bytes</i></span>
+          <span class="frame-field"><b>CRC-16</b><i>2 B</i></span>
+        </div>
+        <p class="doc-note">COBS framed, 0x00 delimiter, CRC-16/CCITT-FALSE over the header and payload.</p>
+
+        <table class="doc-table doc-table--wide">
+          <thead><tr><th>MESSAGE</th><th>DIRECTION</th><th>NOTES</th></tr></thead>
+          <tbody>
+            <tr><td class="tone-accent">HELLO_REQ / HELLO_RSP</td><td>host to device, device to host</td><td>Version, channel counts and limits handshake</td></tr>
+            <tr><td class="tone-green">SET_CONFIG</td><td>host to device</td><td>Mode, channel mask, rate, count, trigger mode, edge, source and level</td></tr>
+            <tr><td class="tone-green">CAPTURE_REQ</td><td>host to device</td><td>Asks for one frame; the host re-requests each frame while running</td></tr>
+            <tr><td class="tone-amber">CAPTURE_DATA</td><td>device to host</td><td>Flags, trigger index, sample count and interleaved 12-bit codes</td></tr>
+            <tr><td>ACK / NACK</td><td>device to host</td><td>Acknowledges a SET_CONFIG with the configuration it actually applied</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow eyebrow--sub">BUILD &amp; FLASH</p>
+      <div class="doc-card">
+        <pre class="code-block"><code>pio run -e pico                 # build the firmware
+pio run -e pico -t upload       # flash the Pico
+cd tests/host &amp;&amp; make test      # host-side capture tests</code></pre>
+        <p class="doc-note">Pico SDK, native — no Arduino framework. The panel is an addon; the browser is the product.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <b>Pico Scope Display UI</b>
+        <p>RP2040 · Pico SDK · MIT License · no analog front end — amplitudes are raw 12-bit ADC codes</p>
+      </div>
+      <div class="footer-links">
+        <a href="console.html">Console</a>
+        <a href="https://github.com/wedsamuel1230/pico-scope-display-ui">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<p class="visually-hidden" id="sr-measurements" aria-live="polite"></p>
+
+<script src="js/protocol.js"></script>
+<script src="js/plot.js"></script>
+<script src="js/serial.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

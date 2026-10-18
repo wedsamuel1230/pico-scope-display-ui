@@ -64,6 +64,7 @@ const ScopePlot = (() => {
     green: "#38d95b",
     err: "#ff5252",
     trace: "#c9e94f",
+    cursor: "#a78bfa",
   };
 
   /* channel colours, matching COLOR_CH1/2/3 in src/display/st7789.h.
@@ -83,6 +84,7 @@ const ScopePlot = (() => {
     {
       bg: "#000000", grid: "#26323f", text: "#e6edf3", dim: "#7d8b99",
       amber: "#ffb000", green: "#38d95b", err: "#ff5252", trace: "#c9e94f",
+      cursor: "#a78bfa",
       ch: ["#fc8c00", "#00d4ff", "#ff4fd8"],
       lane: ["#ffd23f", "#4fd1ff", "#7ee787", "#ff9f68",
              "#c792ea", "#f78c6c", "#89ddff", "#ffe082"],
@@ -90,6 +92,7 @@ const ScopePlot = (() => {
     {
       bg: "#f8f9fb", grid: "#d9e0ea", text: "#1c2128", dim: "#6b7380",
       amber: "#d98c0d", green: "#21a13b", err: "#d1242f", trace: "#3f6212",
+      cursor: "#6d28d9",
       ch: ["#c2410c", "#0e7490", "#be185d"],
       lane: ["#b45309", "#0369a1", "#15803d", "#c2410c",
              "#7e22ce", "#be123c", "#0e7490", "#a16207"],
@@ -106,6 +109,7 @@ const ScopePlot = (() => {
     C.green = t.green;
     C.err = t.err;
     C.trace = t.trace;
+    C.cursor = t.cursor;
     for (let i = 0; i < CH_COLOR.length; i += 1) CH_COLOR[i] = t.ch[i];
     for (let i = 0; i < LANE_COLOR.length; i += 1) LANE_COLOR[i] = t.lane[i];
     return t;
@@ -226,6 +230,59 @@ const ScopePlot = (() => {
   /* ---- LOGIC: stacked digital lanes -------------------------------- */
   /* `samples[i] & 0xFF` holds D0 in bit 0 .. D7 in bit 7 — the same
      masking rule the firmware applies before display or transmit.      */
+  /* ---- pointer geometry ---------------------------------------------- */
+  /* These three exist so the mouse can talk to the trace. They invert and
+     re-use drawTrace's own mappings, which is why dragging the level rule
+     lands on the same pixel the trace crosses: there is only one formula. */
+
+  /* canvas y -> raw ADC code (inverse of drawTrace's yOf)               */
+  function codesAtY(y) {
+    if (WAVE_H <= 1) return 0;
+    const v = (WAVE_Y + WAVE_H - 1 - y) * 4095 / (WAVE_H - 1);
+    return Math.max(0, Math.min(4095, Math.round(v)));
+  }
+
+  /* raw ADC code -> canvas y (forward, so app.js can hit-test the rule) */
+  function yAtCodes(codes) {
+    const v = Math.max(0, Math.min(4095, codes));
+    return WAVE_Y + WAVE_H - 1 - v * (WAVE_H - 1) / 4095;
+  }
+
+  /* canvas x -> sample index, inverting c = floor(i * W / n) - delta.
+     This is what lets a time cursor name the amplitude under it.        */
+  function sampleAtX(x, n, triggerIndex) {
+    if (n < 2) return 0;
+    const hasTrig = triggerIndex != null && triggerIndex !== 0xFFFF;
+    const delta = hasTrig ? Math.floor(triggerIndex * W / n) - TRIG_COL : 0;
+    const i = Math.round((x + delta) * n / W);
+    return Math.max(0, Math.min(n - 1, i));
+  }
+
+  /* A is tabbed at the top of the wave area, B at the bottom, so the two
+     cursors are told apart without reading the labels off the readout.  */
+  function drawCursors(ctx, xs) {
+    if (!xs) return;
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let k = 0; k < xs.length; k += 1) {
+      const x = xs[k];
+      if (x == null) continue;
+      const px = Math.round(x);
+      ctx.strokeStyle = C.cursor;
+      ctx.globalAlpha = 0.55;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(px + 0.5, WAVE_Y);
+      ctx.lineTo(px + 0.5, WAVE_Y + WAVE_H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = C.cursor;
+      ctx.fillRect(px, k === 0 ? WAVE_Y : WAVE_Y + WAVE_H - 6, 2, 6);
+    }
+    ctx.restore();
+  }
+
   function drawLogic(ctx, samples, count, triggerIndex, running) {
     if (!samples || samples.length === 0) return;
     const n = Math.min(count || samples.length, samples.length);
@@ -439,6 +496,8 @@ const ScopePlot = (() => {
       }
     }
 
+    if (o.cursors) drawCursors(ctx, o.cursors);
+
     if (CHROME) {
       drawScaleRow(ctx, mode, o.rate || 0, o.count || 0, o.channels || 1);
       drawStateRow(ctx, o.flags || 0, !!o.running);
@@ -481,5 +540,7 @@ const ScopePlot = (() => {
     fitCanvas, drawAll, drawTraceOnly,
     drawTrace, drawGrid, clearWave, drawHeader, drawLogic,
     drawScaleRow, drawStateRow, drawLevelLine, slotsForMask,
+    codesAtY, yAtCodes, sampleAtX, drawCursors,
+    get TRIG_COL() { return TRIG_COL; },
   };
 })();

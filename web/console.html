@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console — Pico Scope</title>
+<meta name="description" content="Connect, set the timebase, arm the trigger and read the capture. The level you pick is drawn on the trace.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230a0a0c'/%3E%3Cpath%20d='M4%2020c3-11%206-11%209%200s6%2011%209%200'%20fill='none'%20stroke='%232997ff'%20stroke-width='2.4'%20stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/scope.css">
+</head>
+<body>
+
+<a class="skip-link" href="#stage">Skip to the plot</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="wordmark" href="index.html">PICO SCOPE</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a class="nav-link" href="index.html">Home</a>
+      <a class="nav-link" href="console.html" aria-current="page">Console</a>
+      <a class="nav-link" href="docs.html">Docs</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="theme-btn" id="btn-theme" type="button" aria-label="Switch to light theme" title="Switch theme">
+        <span id="btn-theme-icon">
+          <svg class="i-moon" width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.4 9.7A5.8 5.8 0 0 1 6.3 2.6 6 6 0 1 0 13.4 9.7Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <svg class="i-sun" width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3.1"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1"/></svg>
+        </span>
+      </button>
+      <a class="pill pill--accent pill--xs" href="docs.html">Wiring guide</a>
+    </div>
+  </div>
+</header>
+
+<section class="section section--intro">
+  <div class="wrap">
+    <p class="eyebrow">THE CONSOLE</p>
+    <h1 class="h2">Drive it from the browser.</h1>
+    <p class="section-sub">Connect, set the timebase, arm the trigger and watch it land. The level you pick is drawn on the trace — drag the rule and one update is sent when you let go.</p>
+  </div>
+</section>
+
+<main class="sheet">
+
+  <section class="section section--stage" id="stage">
+    <h2 class="visually-hidden">Live capture</h2>
+    <div class="plot-card">
+      <div class="plot-head">
+        <div class="plot-brand">
+          <span class="plot-mode" id="hdr-mode">SCOPE</span>
+          <span class="chips" id="hdr-badges"></span>
+        </div>
+        <p class="plot-meta" id="plot-meta">no capture yet</p>
+        <p class="plot-run" id="plot-run">
+          <span class="plot-dot"></span><span id="plot-run-text">STOP</span>
+        </p>
+      </div>
+
+      <div class="plot-scroll">
+        <canvas class="plot-canvas" id="scope-canvas" width="1144" height="320" role="img"
+          aria-label="Live capture plot: a twelve-division time base with three analog channels and eight stacked logic lanes, drawn in raw 12-bit ADC codes. The trigger level is drawn as a dashed rule you can drag vertically; two cursors can be placed to read a time and code difference."></canvas>
+      </div>
+
+      <div class="plot-axis">
+        <span class="axis-origin">0</span>
+        <span class="axis-tdiv" id="plot-tdiv">T/DIV —</span>
+        <span class="axis-window" id="plot-window">— WINDOW</span>
+      </div>
+
+      <div class="plot-tools">
+        <button class="pill pill--xs" id="btn-cursors" type="button" aria-pressed="false">Cursors</button>
+        <p class="plot-cursors" id="plot-cursors">
+          <span class="cursor-read" id="cursor-a">A —</span>
+          <span class="cursor-delta" id="cursor-delta">Δt —</span>
+          <span class="cursor-read" id="cursor-b">B —</span>
+        </p>
+      </div>
+
+      <div class="plot-tiles">
+        <div class="cell cell--tile" data-tone="amber">
+          <span class="cell-label" id="tile-label-1">CH1 · FREQ</span>
+          <span class="cell-value" id="m-freq">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="ink">
+          <span class="cell-label" id="tile-label-2">CH1 · VPP</span>
+          <span class="cell-value" id="m-vpp">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="ink">
+          <span class="cell-label" id="tile-label-3">CH1 · RMS</span>
+          <span class="cell-value" id="m-rms">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="green">
+          <span class="cell-label" id="tile-label-4">RATE</span>
+          <span class="cell-value" id="m-rate">—</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section--console" id="console">
+    <div class="wrap">
+      <p class="eyebrow">FULL REMOTE CONTROL</p>
+      <h2 class="h2">Every knob on the page.</h2>
+      <p class="section-sub">Timebase, trigger level, edge, source and depth — written straight to the board.</p>
+
+      <form class="panel" id="ctl-panel" onsubmit="return false" aria-labelledby="panel-title">
+        <div class="panel-head">
+          <h3 class="panel-title" id="panel-title">CAPTURE SETTINGS</h3>
+          <span class="panel-state" id="panel-state">DISCONNECTED</span>
+        </div>
+
+        <div class="panel-group">
+          <h4 class="group-title">CAPTURE</h4>
+          <div class="cells">
+            <div class="cell">
+              <span class="cell-label" id="lbl-mode">MODE</span>
+              <div class="seg" role="radiogroup" aria-labelledby="lbl-mode">
+                <label class="seg-item"><input type="radio" name="mode" id="mode-scope" value="scope" checked><span>SCOPE</span></label>
+                <label class="seg-item"><input type="radio" name="mode" id="mode-logic" value="logic"><span>LOGIC</span></label>
+              </div>
+            </div>
+
+            <div class="cell">
+              <label class="cell-label" for="cfg-rate">RATE (S/s)</label>
+              <input class="cell-input" type="number" id="cfg-rate" min="1000" max="500000" step="1000" inputmode="numeric" aria-describedby="rate-note">
+              <p class="cell-note" id="rate-note">Total ADC rate · lane rate in logic mode</p>
+            </div>
+
+            <div class="cell">
+              <label class="cell-label" for="cfg-count">SAMPLES</label>
+              <input class="cell-input" type="number" id="cfg-count" min="64" max="2048" step="1" inputmode="numeric" aria-describedby="count-note">
+              <p class="cell-note" id="count-note">Per channel · per capture in logic mode</p>
+            </div>
+
+            <div class="cell" id="ctl-channels">
+              <span class="cell-label" id="lbl-channels">CHANNELS</span>
+              <div class="choices" role="group" aria-labelledby="lbl-channels">
+                <label class="choice ch1"><input type="checkbox" id="ch1" checked><span>CH1</span></label>
+                <label class="choice ch2"><input type="checkbox" id="ch2"><span>CH2</span></label>
+                <label class="choice ch3"><input type="checkbox" id="ch3"><span>CH3</span></label>
+              </div>
+              <p class="cell-note">Analog channels; logic mode always captures all eight lanes</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-group">
+          <h4 class="group-title">TRIGGER</h4>
+          <div class="cells">
+            <div class="cell" id="cell-trig-level">
+              <div class="cell-row">
+                <label for="cfg-trig-level">TRIGGER LEVEL</label>
+                <output class="cell-output" id="trig-level-out" for="cfg-trig-level">2048</output>
+              </div>
+              <input class="range" type="range" id="cfg-trig-level" min="0" max="4095" step="1" value="2048" aria-describedby="trig-level-note">
+              <p class="cell-note" id="trig-level-note">Raw 12-bit ADC code, 0–4095</p>
+              <p class="visually-hidden" id="trig-level-na">Trigger level is ignored in logic mode.</p>
+            </div>
+
+            <div class="cell">
+              <label class="cell-label" for="trig-mode">TRIGGER MODE</label>
+              <select class="cell-input" id="trig-mode">
+                <option value="auto">Auto</option>
+                <option value="normal" selected>Normal</option>
+              </select>
+              <p class="cell-note">Normal holds the frame until a real edge is found</p>
+            </div>
+
+            <div class="cell">
+              <label class="cell-label" for="trig-edge">EDGE</label>
+              <select class="cell-input" id="trig-edge">
+                <option value="rising">Rising</option>
+                <option value="falling">Falling</option>
+              </select>
+              <p class="cell-note">Which way the level has to cross</p>
+            </div>
+
+            <div class="cell">
+              <label class="cell-label" for="trig-channel">SOURCE</label>
+              <select class="cell-input" id="trig-channel"></select>
+              <p class="cell-note">The channel the edge is looked for on</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-group">
+          <h4 class="group-title">RUN</h4>
+          <div class="panel-actions">
+            <button class="pill pill--accent" id="btn-autoset" type="button" disabled>Auto set</button>
+            <button class="pill pill--ghost" id="btn-demo" type="button">Run the demo</button>
+            <button class="pill pill--ghost" id="btn-connect" type="button">Connect to a board</button>
+            <button class="pill" id="btn-run" type="button" disabled>Run</button>
+            <button class="pill" id="btn-stop" type="button" disabled>Stop</button>
+            <button class="pill pill--sm" id="btn-apply" type="button" disabled>Apply settings</button>
+            <button class="pill pill--sm" id="btn-disconnect" type="button" disabled>Disconnect</button>
+          </div>
+          <p class="status" id="status" role="status">not connected</p>
+          <p class="caps" id="caps-line"></p>
+        </div>
+
+        <div class="panel-group">
+          <h4 class="group-title">EXPORT</h4>
+          <p class="cell-note">One row per sample — timestamp, CH1, CH2, CH3, in raw 12-bit codes. Nothing is rescaled on the way out, so the file matches the plot.</p>
+          <div class="panel-actions">
+            <button class="pill" id="btn-csv" type="button" disabled>Download CSV</button>
+            <button class="pill pill--sm" id="btn-copy" type="button" disabled>Copy codes</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <b>Pico Scope Display UI</b>
+        <p>RP2040 · Pico SDK · MIT License · no analog front end — amplitudes are raw 12-bit ADC codes</p>
+      </div>
+      <div class="footer-links">
+        <a href="docs.html">Docs</a>
+        <a href="https://github.com/wedsamuel1230/pico-scope-display-ui">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<p class="visually-hidden" id="sr-measurements" aria-live="polite"></p>
+
+<script src="js/protocol.js"></script>
+<script src="js/plot.js"></script>
+<script src="js/serial.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

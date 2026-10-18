@@ -70,6 +70,9 @@
     apply:      el("btn-apply"),
     theme:      el("btn-theme"),
     autoSet:    el("btn-autoset"),
+    cursors:    el("btn-cursors"),
+    csv:        el("btn-csv"),
+    copy:       el("btn-copy"),
   };
 
   const ctrls = {
@@ -87,6 +90,12 @@
     count:        el("cfg-count"),
   };
 
+  const cursorOut = {
+    root:  el("plot-cursors"),
+    a:     el("cursor-a"),
+    delta: el("cursor-delta"),
+    b:     el("cursor-b"),
+  };
   const tileLabels = [
     el("tile-label-1"), el("tile-label-2"),
     el("tile-label-3"), el("tile-label-4"),
@@ -141,6 +150,7 @@
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function setStatus(text, cls) {
+    if (!$status) return;
     $status.textContent = text;
     $status.className = "status" + (cls ? " " + cls : "");
   }
@@ -261,14 +271,14 @@
     const [cLo, cHi] = countLimits(mode);
     const dflt = modeDefaults(mode);
 
-    let rate = parseInt(ctrls.rate.value, 10);
-    let count = parseInt(ctrls.count.value, 10);
+    let rate = parseInt(ctrls.rate ? ctrls.rate.value : "", 10);
+    let count = parseInt(ctrls.count ? ctrls.count.value : "", 10);
     if (!Number.isFinite(rate) || rate <= 0) rate = dflt.rate;
     if (!Number.isFinite(count) || count <= 0) count = dflt.count;
     rate = clamp(rate, rLo, rHi);
     count = clamp(count, cLo, cHi);
 
-    let trig = parseInt(ctrls.trigChannel.value, 10);
+    let trig = parseInt(ctrls.trigChannel ? ctrls.trigChannel.value : "", 10);
     if (!Number.isFinite(trig)) trig = L.TRIG_CHANNEL_NONE;
 
     return {
@@ -277,8 +287,8 @@
       /* the slider is the only source of the trigger level; the firmware
          zeroes it for LOGIC captures, so it is always safe to send     */
       triggerLevel: currentTriggerLevel(),
-      edge: ctrls.trigEdge.value === "falling" ? 1 : 0,
-      triggerMode: ctrls.trigMode.value === "normal"
+      edge: ctrls.trigEdge && ctrls.trigEdge.value === "falling" ? 1 : 0,
+      triggerMode: ctrls.trigMode && ctrls.trigMode.value === "normal"
         ? P.TRIG.NORMAL : P.TRIG.AUTO,
       captureMode: mode,
       channelMask: currentMask(),
@@ -293,6 +303,9 @@
    * from inheriting SCOPE's 100 kS/s.
    */
   function syncControls(applyModeDefaults) {
+    /* Home and Docs carry no capture form — nothing to synchronise there */
+    if (!ctrls.rate || !ctrls.count) { syncHeader(); return; }
+
     const mode = currentMode();
     const logic = mode === P.MODE.LOGIC;
 
@@ -350,6 +363,7 @@
   }
 
   function syncHeader() {
+    if (!$hdrMode) return;
     const mode = currentMode();
     const logic = mode === P.MODE.LOGIC;
     $hdrMode.textContent = logic ? "LOGIC" : "SCOPE";
@@ -431,6 +445,86 @@
     }
   }
 
+  /* ---- export -------------------------------------------------------
+     One row per sample, raw ADC codes, nothing rescaled on the way out
+     so the file matches what the plot is drawing.                     */
+
+  /** Which analog channels a frame's columns are. The wire carries a
+      COUNT, not a mask, so the applied configuration is the only honest
+      source; fall back to the count when nothing has been applied.     */
+  function frameSlotLabels(d) {
+    const mask = (appliedCfg && appliedCfg.channelMask) ||
+      (d.channels >= 3 ? 0x07 : d.channels === 2 ? 0x03 : 0x01);
+    return ScopePlot.slotsForMask(mask).map((slot) => CH_LABELS[slot]);
+  }
+
+  function frameToCSV(d) {
+    const lines = [];
+    const dt = d.rate > 0 ? 1 / d.rate : 0;
+
+    if (d.mode === P.MODE.LOGIC) {
+      const head = ["t_ms"];
+      for (let lane = 0; lane < L.LOGIC_CHANNELS; lane++) head.push("D" + lane);
+      lines.push(head.join(","));
+      const n = Math.min(d.count, d.samples.length);
+      for (let i = 0; i < n; i++) {
+        const row = [(i * dt * 1000).toFixed(6)];
+        for (let lane = 0; lane < L.LOGIC_CHANNELS; lane++) {
+          row.push((d.samples[i] >> lane) & 1);
+        }
+        lines.push(row.join(","));
+      }
+      return lines.join("\r\n") + "\r\n";
+    }
+
+    const channels = Math.max(1, d.channels || 1);
+    const labels = frameSlotLabels(d).slice(0, channels);
+    while (labels.length < channels) labels.push("CH" + (labels.length + 1));
+    lines.push(["t_ms"].concat(labels).join(","));
+
+    const n = Math.min(d.count, Math.floor(d.samples.length / channels));
+    for (let i = 0; i < n; i++) {
+      const row = [(i * dt * 1000).toFixed(6)];
+      for (let c = 0; c < channels; c++) row.push(d.samples[i * channels + c]);
+      lines.push(row.join(","));
+    }
+    return lines.join("\r\n") + "\r\n";
+  }
+
+  function syncExportButtons() {
+    const has = !!lastFrame;
+    if (buttons.csv) buttons.csv.disabled = !has;
+    if (buttons.copy) buttons.copy.disabled = !has;
+  }
+
+  function downloadCSV() {
+    if (!lastFrame) { setStatus("nothing to export yet", "warn"); return; }
+    const csv = frameToCSV(lastFrame);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pico-scope-" +
+      new Date().toISOString().replace(/[:.]/g, "-") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setStatus("exported " + lastFrame.count + " samples as CSV", "ok");
+  }
+
+  function copyCodes() {
+    if (!lastFrame) { setStatus("nothing to export yet", "warn"); return; }
+    const csv = frameToCSV(lastFrame);
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      setStatus("clipboard unavailable — use Download CSV", "warn");
+      return;
+    }
+    navigator.clipboard.writeText(csv).then(
+      () => setStatus("codes copied to the clipboard", "ok"),
+      () => setStatus("clipboard blocked — use Download CSV", "warn"));
+  }
+
   function onCaptureData(ev) {
     const d = P.parseCaptureData(ev.payload);
     if (!d) { setStatus("malformed capture payload", "err"); return; }
@@ -444,6 +538,7 @@
 
   /* ---- measurement tiles ------------------------------------------- */
   function updateTiles(d) {
+    if (!canvas) return;
     if (d.mode === P.MODE.LOGIC) updateLogicTiles(d);
     else updateScopeTiles(d);
   }
@@ -569,11 +664,13 @@
      setLayout() rewrites W/H, so the backing store has to be re-derived
      after it and after any resize or theme change.                      */
   function fitCanvasNow() {
+    if (!canvas) { ctx = null; return; }
     ctx = ScopePlot.fitCanvas(canvas);
     fittedW = canvas.clientWidth || ScopePlot.W;
   }
 
   function paint(opts) {
+    if (!canvas) return;
     ScopePlot.setLayout(LAYOUT);
 
     const cssW = canvas.clientWidth || ScopePlot.W;
@@ -610,6 +707,7 @@
         flags: lastFrame.flags,
         triggerIndex: lastFrame.triggerIndex,
         triggerLevel: currentTriggerLevel(),
+        cursors: cursorOn ? [cursorA, cursorB] : null,
       };
     }
 
@@ -622,6 +720,8 @@
   }
 
   function render() {
+    if (!canvas) return;
+    syncExportButtons();
     paint(drawOpts());
     syncCardChrome();
   }
@@ -684,9 +784,11 @@
                ((caps.firmwareVersion >> 8) & 0xFF) + "." +
                (caps.firmwareVersion & 0xFF);
 
-    $capsLine.textContent = "firmware " + fw +
-      " · " + caps.analogChannels + " ADC · " +
-      caps.logicChannels + " logic";
+    if ($capsLine) {
+      $capsLine.textContent = "firmware " + fw +
+        " · " + caps.analogChannels + " ADC · " +
+        caps.logicChannels + " logic";
+    }
 
     return caps;
   }
@@ -720,8 +822,8 @@
     }
 
     appliedCfg = cfg;
-    ctrls.rate.value = String(cfg.rate);
-    ctrls.count.value = String(cfg.count);
+    if (ctrls.rate) ctrls.rate.value = String(cfg.rate);
+    if (ctrls.count) ctrls.count.value = String(cfg.count);
 
     const total = ack.appliedRate;
     const perCh = mode === P.MODE.LOGIC
@@ -819,11 +921,11 @@
   }
 
   function syncButtons() {
-    buttons.demo.disabled = connected;
-    buttons.connect.disabled = connected;
-    buttons.disconnect.disabled = !connected;
-    buttons.run.disabled = !connected || running;
-    buttons.stop.disabled = !connected || !running;
+    if (buttons.demo) buttons.demo.disabled = connected;
+    if (buttons.connect) buttons.connect.disabled = connected;
+    if (buttons.disconnect) buttons.disconnect.disabled = !connected;
+    if (buttons.run) buttons.run.disabled = !connected || running;
+    if (buttons.stop) buttons.stop.disabled = !connected || !running;
     if (buttons.apply) buttons.apply.disabled = !connected;
     if (buttons.autoSet) buttons.autoSet.disabled = !connected || autoSetBusy;
 
@@ -1022,13 +1124,172 @@
 
   /* ---- events -------------------------------------------------------- */
   if (buttons.autoSet) buttons.autoSet.addEventListener("click", () => { autoSet(); });
-  buttons.demo.addEventListener("click", () => connect("demo"));
-  buttons.connect.addEventListener("click", () => connect("serial"));
+  /* ---- plot pointer: drag the level rule, drag the cursors ----------- */
+  /* Both gestures live on the canvas and both write back into the form,
+     so the form stays the single source of truth: a drag still leaves
+     through currentConfig() -> SET_CONFIG like any other change.        */
+
+  let cursorOn = false;
+  let cursorA = null;
+  let cursorB = null;
+  let dragging = null;      /* "level" | "a" | "b" | null */
+
+  function canvasPoint(ev) {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return {
+      x: (ev.clientX - rect.left) * (canvas.width / rect.width),
+      y: (ev.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+
+  /* The rule is one pixel; a fingertip is not. */
+  function levelBand() { return Math.max(10, canvas.height * 0.04); }
+
+  function nearLevel(y) {
+    if (currentMode() !== P.MODE.SCOPE) return false;
+    return Math.abs(y - ScopePlot.yAtCodes(currentTriggerLevel())) <= levelBand();
+  }
+
+  /* The trace amplitude under a cursor, and its time relative to the
+     trigger. Slot 0 is the first ENABLED channel — the same one the
+     measurement tiles describe.                                        */
+  function cursorInfo(x) {
+    if (!lastFrame || !lastFrame.samples || !lastFrame.samples.length) return null;
+    const channels = Math.max(1, lastFrame.channels || 1);
+    const n = Math.min(lastFrame.count || 0,
+                       Math.floor(lastFrame.samples.length / channels));
+    if (n < 2) return null;
+    const w = canvas.width || ScopePlot.W;
+    const win = lastFrame.rate > 0 ? (lastFrame.count || n) / lastFrame.rate : 0;
+    const i = ScopePlot.sampleAtX(x, n, lastFrame.triggerIndex);
+    return {
+      t: win > 0 ? ((x - ScopePlot.TRIG_COL) / w) * win : 0,
+      code: lastFrame.samples[i * channels],
+    };
+  }
+
+  function syncCursorReadout() {
+    if (!cursorOut.root) return;
+    const one = (x) => {
+      const info = x == null ? null : cursorInfo(x);
+      if (!info) return "—";
+      return (info.t < 0 ? "-" : "+") + fmtTime(Math.abs(info.t)) +
+             " · " + info.code + " codes";
+    };
+    cursorOut.a.textContent = "A " + one(cursorA);
+    cursorOut.b.textContent = "B " + one(cursorB);
+
+    let delta = "Δt —";
+    if (cursorA != null && cursorB != null) {
+      const ia = cursorInfo(cursorA);
+      const ib = cursorInfo(cursorB);
+      if (ia && ib) {
+        const dt = Math.abs(ib.t - ia.t);
+        const inv = dt > 0 ? " · " + fmtFreq(1 / dt) : "";
+        delta = "Δt " + fmtTime(dt) + " · Δc " +
+                Math.abs(ib.code - ia.code) + inv;
+      }
+    }
+    cursorOut.delta.textContent = delta;
+    cursorOut.root.classList.toggle("is-live", cursorA != null && cursorB != null);
+  }
+
+  function setCursor(kind, x) {
+    const w = canvas.width || ScopePlot.W;
+    const cx = Math.max(0, Math.min(w, x));
+    if (kind === "a") cursorA = cx; else cursorB = cx;
+    syncCursorReadout();
+    render();
+  }
+
+  function onCanvasDown(ev) {
+    const pt = canvasPoint(ev);
+    if (!pt) return;
+
+    if (nearLevel(pt.y)) {
+      dragging = "level";
+      canvas.classList.add("is-level");
+    } else if (cursorOn) {
+      /* grab the closer cursor; with both unset, drop A first */
+      const gapA = cursorA == null ? Infinity : Math.abs(cursorA - pt.x);
+      const gapB = cursorB == null ? Infinity : Math.abs(cursorB - pt.x);
+      dragging = gapA <= gapB ? "a" : "b";
+      setCursor(dragging, pt.x);
+    } else {
+      return;
+    }
+
+    if (canvas.setPointerCapture) {
+      try { canvas.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    }
+    ev.preventDefault();
+  }
+
+  function onCanvasMove(ev) {
+    const pt = canvasPoint(ev);
+    if (!pt) return;
+    if (!dragging) {
+      canvas.classList.toggle("is-level", nearLevel(pt.y));
+      return;
+    }
+    if (dragging === "level") {
+      if (ctrls.trigLevel) {
+        ctrls.trigLevel.value = String(ScopePlot.codesAtY(pt.y));
+      }
+      syncTriggerLevelOut();
+      render();
+      return;
+    }
+    setCursor(dragging, pt.x);
+  }
+
+  function onCanvasUp(ev) {
+    if (!dragging) return;
+    const wasLevel = dragging === "level";
+    dragging = null;
+    if (canvas.releasePointerCapture) {
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    }
+    canvas.classList.remove("is-level");
+    /* one SET_CONFIG per gesture, not one per pixel */
+    if (wasLevel) applyConfigSoon();
+    render();
+  }
+
+  if (buttons.cursors) {
+    buttons.cursors.addEventListener("click", () => {
+      cursorOn = !cursorOn;
+      buttons.cursors.setAttribute("aria-pressed", cursorOn ? "true" : "false");
+      buttons.cursors.classList.toggle("pill--accent", cursorOn);
+      canvas.classList.toggle("is-cursors", cursorOn);
+      if (cursorOn && cursorA == null) {
+        const w = canvas.width || ScopePlot.W;
+        cursorA = Math.round(w / 3);
+        cursorB = Math.round(w * 2 / 3);
+      }
+      syncCursorReadout();
+      render();
+    });
+  }
+
+  if (canvas) {
+    canvas.addEventListener("pointerdown", onCanvasDown);
+    canvas.addEventListener("pointermove", onCanvasMove);
+    canvas.addEventListener("pointerup", onCanvasUp);
+    canvas.addEventListener("pointercancel", onCanvasUp);
+    canvas.addEventListener("pointerleave", () => {
+      if (!dragging) canvas.classList.remove("is-level");
+    });
+  }
+
+  if (buttons.demo) buttons.demo.addEventListener("click", () => connect("demo"));
+  if (buttons.connect) buttons.connect.addEventListener("click", () => connect("serial"));
   if (buttons.apply) {
     buttons.apply.addEventListener("click", () => applyConfig(true));
   }
 
-  buttons.run.addEventListener("click", () => {
+  if (buttons.run) buttons.run.addEventListener("click", () => {
     if (!connected || running) return;
     running = true;
     syncButtons();
@@ -1037,7 +1298,7 @@
     loop();
   });
 
-  buttons.stop.addEventListener("click", () => {
+  if (buttons.stop) buttons.stop.addEventListener("click", () => {
     if (!connected || !running) return;
     running = false;
     transport.writeFrame(P.stop(seq)).catch(() => { /* ignore */ });
@@ -1046,7 +1307,12 @@
     render();
   });
 
-  buttons.disconnect.addEventListener("click", () => { disconnect(); });
+  if (buttons.disconnect) {
+    buttons.disconnect.addEventListener("click", () => { disconnect(); });
+  }
+
+  if (buttons.csv) buttons.csv.addEventListener("click", downloadCSV);
+  if (buttons.copy) buttons.copy.addEventListener("click", copyCodes);
 
   if (buttons.theme) {
     buttons.theme.addEventListener("click", () => {
@@ -1066,12 +1332,12 @@
     applyConfigSoon();
   }
 
-  ctrls.modeScope.addEventListener("change", () => {
+  if (ctrls.modeScope) ctrls.modeScope.addEventListener("change", () => {
     if (!ctrls.modeScope.checked) return;
     onModeChange();
   });
 
-  ctrls.modeLogic.addEventListener("change", () => {
+  if (ctrls.modeLogic) ctrls.modeLogic.addEventListener("change", () => {
     if (!ctrls.modeLogic.checked) return;
     onModeChange();
   });
@@ -1114,7 +1380,7 @@
         render();
       }
     });
-    ro.observe(canvas);
+    if (canvas) ro.observe(canvas);
   }
 
   window.addEventListener("load", () => {
@@ -1130,5 +1396,17 @@
     setStatus("not connected");
     if (buttons.apply) buttons.apply.disabled = true;
     syncButtons();
+
+    /* Home carries the plot card but none of the controls: run the demo so
+       the landing page shows a live trace instead of an empty grid       */
+    if (canvas && !ctrls.rate && !connected) {
+      connect("demo").then(() => {
+        if (!connected || running) return;
+        running = true;
+        syncButtons();
+        render();
+        loop();
+      });
+    }
   });
 })();
