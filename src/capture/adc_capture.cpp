@@ -107,13 +107,17 @@ void adc_capture_start(uint16_t *dst, uint16_t count, uint8_t channel_mask)
 
     if (count > SCOPE_MAX_SAMPLE_COUNT) count = SCOPE_MAX_SAMPLE_COUNT;
 
+    /* Quiesce any previous capture BEFORE arming new state: abort()
+     * finishes with s_count = 0, so it must not run after the assignment
+     * below or wait() would misread the armed capture as NOT_INIT and
+     * never start the DMA. */
+    adc_capture_abort();
+    adc_fifo_drain();
+
     s_dst = dst;
     s_count = count;
     s_channels = channels;
     s_mask = mask;
-
-    adc_capture_abort();
-    adc_fifo_drain();
 
     /* Round-robin over the enabled channels; start at the lowest one. */
     uint32_t round_robin = 0u;

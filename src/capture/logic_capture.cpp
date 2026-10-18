@@ -111,11 +111,15 @@ void logic_capture_start(uint32_t *dst, uint16_t count)
     if (s_sm < 0 || dst == nullptr || count == 0u) return;
     if (count > SCOPE_MAX_LOGIC_SAMPLES) count = SCOPE_MAX_LOGIC_SAMPLES;
 
-    s_dst = dst;
-    s_count = count;
-
+    /* Quiesce any previous capture BEFORE arming new state: abort()
+     * finishes with s_count = 0, so it must not run after the assignment
+     * below or wait() would misread the armed capture as NOT_INIT and
+     * never start the DMA. */
     logic_capture_abort();
     apply_rate();
+
+    s_dst = dst;
+    s_count = count;
 
     dma_channel_config cfg = dma_channel_get_default_config(s_dma_ch);
     channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
