@@ -1069,3 +1069,133 @@ a.wordmark:hover { color: var(--ink); text-decoration: none; }
   white-space: pre;
   color: var(--ink);
 }
+
+/* ==================================================================
+   Measurements — the per-channel readout table
+   ================================================================== */
+
+.section--measure { padding: 8px 0 64px; }
+
+.measure-card {
+  margin-top: 28px;
+  padding: 0 28px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.measure-head,
+.measure-row {
+  display: grid;
+  grid-template-columns: 180px repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  align-items: center;
+}
+
+.measure-head {
+  padding: 22px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.measure-th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.3px;
+  text-transform: uppercase;
+  color: var(--sub);
+}
+
+.measure-row {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.measure-row:last-child { border-bottom: 0; }
+
+.measure-ch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.measure-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.measure-off {
+  margin-left: 6px;
+  padding: 3px 10px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--sub);
+}
+
+.measure-row[data-off="true"] .measure-ch { color: var(--sub); }
+.measure-row[data-off="true"] .measure-dot { opacity: 0.3; }
+.measure-row[data-off="true"] .measure-val b { color: var(--sub); }
+
+.measure-val {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.measure-val b {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.measure-unit {
+  font-size: 12px;
+  font-style: normal;
+  color: var(--sub);
+}
+
+/* Logic has no amplitude: the Vpp and Rms columns are dropped entirely. */
+#measure-card[data-mode="logic"] .measure-head,
+#measure-card[data-mode="logic"] .measure-row {
+  grid-template-columns: 180px repeat(3, minmax(0, 1fr));
+}
+
+#measure-card[data-mode="logic"] .measure-th--amp,
+#measure-card[data-mode="logic"] .measure-val[data-col="vpp"],
+#measure-card[data-mode="logic"] .measure-val[data-col="rms"] {
+  display: none;
+}
+
+.measure-note {
+  margin: 16px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--sub);
+}
+
+@media (max-width: 760px) {
+  .measure-head,
+  .measure-row {
+    grid-template-columns: 96px repeat(5, minmax(0, 1fr));
+    gap: 10px;
+  }
+  #measure-card[data-mode="logic"] .measure-head,
+  #measure-card[data-mode="logic"] .measure-row {
+    grid-template-columns: 96px repeat(3, minmax(0, 1fr));
+  }
+  .measure-card { padding: 0 16px; }
+  .measure-val b { font-size: 17px; }
+  .measure-unit { display: none; }
+}

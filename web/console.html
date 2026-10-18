@@ -98,6 +98,28 @@
     </div>
   </section>
 
+  <section class="section section--measure" id="measure">
+    <div class="wrap">
+      <p class="eyebrow">MEASUREMENTS</p>
+      <h2 class="h2">Per-channel readouts.</h2>
+      <p class="section-sub">Every channel is measured the same way from one frame, so the columns always agree with each other. Duty is the share of the frame above the channel mean — the mean of a square wave sits on the duty boundary.</p>
+
+      <div class="measure-card" id="measure-card" data-mode="scope">
+        <div class="measure-head">
+          <span class="measure-th">Channel</span>
+          <span class="measure-th">Freq</span>
+          <span class="measure-th">Period</span>
+          <span class="measure-th">Duty</span>
+          <span class="measure-th measure-th--amp">Vpp</span>
+          <span class="measure-th measure-th--amp">Rms</span>
+        </div>
+        <div class="measure-rows" id="measure-rows"></div>
+      </div>
+
+      <p class="measure-note">Threshold-crossing estimates from the current frame · amplitudes are raw 12-bit ADC codes, never volts.</p>
+    </div>
+  </section>
+
   <section class="section section--console" id="console">
     <div class="wrap">
       <p class="eyebrow">FULL REMOTE CONTROL</p>

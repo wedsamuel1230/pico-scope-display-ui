@@ -531,6 +531,7 @@
 
     lastFrame = d;
     updateTiles(d);
+    renderMeasure(d);
     render();
 
     if (running) loop();
@@ -543,41 +544,89 @@
     else updateScopeTiles(d);
   }
 
-  function updateScopeTiles(d) {
-    const channels = d.channels || 1;
+  /* ---- measurement ---------------------------------------------------
+     One routine measures one channel, and both the plot tile and the
+     per-channel table read from it, so the two can never disagree.
+
+     The threshold is the channel mean. That is not an arbitrary pick:
+     the mean of a square wave sits exactly on the duty boundary, so
+     counting samples above it reproduces the duty cycle, and a sine
+     honestly reports 50 %.                                            */
+
+  function splitUnit(text) {
+    const i = text.lastIndexOf(" ");
+    return i < 0 ? [text, ""] : [text.slice(0, i), text.slice(i)];
+  }
+
+  function measureAnalog(d, slot) {
+    const channels = Math.max(1, d.channels || 1);
     const n = Math.min(d.count, Math.floor(d.samples.length / channels));
-    if (n < 2) { clearTiles(); return; }
+    if (n < 2) return null;
 
-    /* first enabled channel is always slot 0 of the interleaved buffer */
-    const nChan = Math.max(1, d.channels || 1);
-    const frameMask = nChan >= 3 ? 0x07 : nChan === 2 ? 0x03 : 0x01;
-    const first = CH_LABELS[ScopePlot.slotsForMask(frameMask)[0]] || CH_LABELS[0];
+    const at = (i) => d.samples[i * channels + slot];
 
-    let min = FULL_SCALE, max = 0, sum = 0;
+    let min = at(0), max = at(0), sum = 0;
     for (let i = 0; i < n; i++) {
-      const v = d.samples[i * channels];
+      const v = at(i);
       if (v < min) min = v;
       if (v > max) max = v;
       sum += v;
     }
     const mean = sum / n;
 
-    let sq = 0;
+    let sq = 0, high = 0;
     for (let i = 0; i < n; i++) {
-      const dv = d.samples[i * channels] - mean;
+      const dv = at(i) - mean;
       sq += dv * dv;
+      if (at(i) >= mean) high++;
     }
-    const rms = Math.sqrt(sq / n);
-    const vpp = max - min;
 
-    /* frequency: count upward crossings of mid-scale, per-channel rate */
     let crossings = 0;
     for (let i = 1; i < n; i++) {
-      const a = d.samples[(i - 1) * channels];
-      const b = d.samples[i * channels];
-      if (a < mean && b >= mean) crossings++;
+      if (at(i - 1) < mean && at(i) >= mean) crossings++;
     }
     const freq = crossings * (d.rate / n);
+
+    return {
+      n, min, max, mean,
+      vpp: max - min,
+      rms: Math.sqrt(sq / n),
+      freq,
+      period: freq > 0 ? 1 / freq : 0,
+      duty: high / n,
+      cycles: crossings,
+    };
+  }
+
+  function measureLogicLane(d, lane) {
+    const n = Math.min(d.count, d.samples.length);
+    if (n < 2) return null;
+    const bit = 1 << lane;
+
+    let high = 0, edges = 0;
+    for (let i = 0; i < n; i++) if (d.samples[i] & bit) high++;
+    for (let i = 1; i < n; i++) {
+      if (!(d.samples[i - 1] & bit) && (d.samples[i] & bit)) edges++;
+    }
+    const freq = edges * (d.rate / n);
+
+    return {
+      n, freq,
+      period: freq > 0 ? 1 / freq : 0,
+      duty: high / n,
+      cycles: edges,
+      active: high > 0,
+    };
+  }
+
+  function updateScopeTiles(d) {
+    const m = measureAnalog(d, 0);
+    if (!m) { clearTiles(); return; }
+
+    /* first enabled channel is always slot 0 of the interleaved buffer */
+    const nChan = Math.max(1, d.channels || 1);
+    const frameMask = nChan >= 3 ? 0x07 : nChan === 2 ? 0x03 : 0x01;
+    const first = CH_LABELS[ScopePlot.slotsForMask(frameMask)[0]] || CH_LABELS[0];
 
     /* Amplitudes stay in raw ADC codes. The firmware always sets
        SCOPE_FLAG_NOT_CALIB and there is no analog front end, so there is
@@ -585,12 +634,115 @@
     setTileTones(["amber", "ink", "ink", "green"]);
     setTileLabels(first + " · FREQ (EST)", first + " · VPP",
                   first + " · RMS", "RATE");
-    tiles.a.textContent = freq > 0 ? fmtFreq(freq) : "—";
-    tiles.b.textContent = vpp + " CODES";
-    tiles.c.textContent = Math.round(rms) + " CODES";
+    tiles.a.textContent = m.freq > 0 ? fmtFreq(m.freq) : "—";
+    tiles.b.textContent = m.vpp + " CODES";
+    tiles.c.textContent = Math.round(m.rms) + " CODES";
     tiles.d.textContent = fmtRate(d.rate);
 
     announce(d);
+  }
+
+  /* ---- per-channel measurement table -------------------------------- */
+  const measureCard = el("measure-card");
+  const measureRows = el("measure-rows");
+  const MEASURE_COLS = ["freq", "period", "duty", "vpp", "rms"];
+
+  function measureSpec(d) {
+    if (d.mode === P.MODE.LOGIC) {
+      const rows = [];
+      for (let lane = 0; lane < L.LOGIC_CHANNELS; lane++) {
+        rows.push({ key: "D" + lane, tone: "ink", lane, live: true });
+      }
+      return rows;
+    }
+    /* CAPTURE_DATA carries a channel count, not a mask, so the applied
+       configuration is the only honest source for which channels a frame
+       holds; fall back to the count-derived mask when none was applied. */
+    const mask = (appliedCfg && appliedCfg.channelMask) ||
+      (d.channels >= 3 ? 0x07 : d.channels === 2 ? 0x03 : 0x01);
+    const enabled = ScopePlot.slotsForMask(mask);
+    const tones = ["amber", "cyan", "magenta"];
+    return CH_LABELS.map((name, i) => ({
+      key: name,
+      tone: tones[i] || "ink",
+      slot: enabled.indexOf(i),
+      live: enabled.indexOf(i) >= 0,
+    }));
+  }
+
+  function renderMeasure(d) {
+    if (!measureCard || !measureRows) return;
+
+    const logic = d.mode === P.MODE.LOGIC;
+    const frag = document.createDocumentFragment();
+
+    measureSpec(d).forEach((row) => {
+      const m = row.live
+        ? (logic ? measureLogicLane(d, row.lane) : measureAnalog(d, row.slot))
+        : null;
+
+      const tr = document.createElement("div");
+      tr.className = "measure-row";
+      tr.dataset.ch = row.key;
+      if (!row.live) tr.dataset.off = "true";
+
+      const ch = document.createElement("span");
+      ch.className = "measure-ch tone-" + row.tone;
+      const dot = document.createElement("i");
+      dot.className = "measure-dot";
+      ch.appendChild(dot);
+      ch.appendChild(document.createTextNode(row.key));
+      if (!row.live) {
+        const off = document.createElement("span");
+        off.className = "measure-off";
+        off.textContent = "off";
+        ch.appendChild(off);
+      }
+      tr.appendChild(ch);
+
+      MEASURE_COLS.forEach((col) => {
+        let text = "—";
+        if (m) {
+          if (col === "freq") {
+            text = m.freq > 0 ? fmtFreq(m.freq) : "—";
+          } else if (col === "period") {
+            text = fmtTime(m.period);
+          } else if (col === "duty") {
+            if (logic ? m.active : m.freq > 0) {
+              text = (m.duty * 100).toFixed(1) + " %";
+            }
+          } else if (col === "vpp") {
+            if (!logic) text = m.vpp + " codes";
+          } else if (col === "rms") {
+            if (!logic) text = Math.round(m.rms) + " codes";
+          }
+        }
+
+        const cell = document.createElement("span");
+        cell.className = "measure-val";
+        cell.dataset.col = col;
+        const parts = splitUnit(text);
+        const b = document.createElement("b");
+        b.textContent = parts[0];
+        cell.appendChild(b);
+        if (parts[1]) {
+          const unit = document.createElement("i");
+          unit.className = "measure-unit";
+          unit.textContent = parts[1].trim();
+          cell.appendChild(unit);
+        }
+        tr.appendChild(cell);
+      });
+
+      frag.appendChild(tr);
+    });
+
+    measureRows.replaceChildren(frag);
+    measureCard.dataset.mode = logic ? "logic" : "scope";
+  }
+
+  function clearMeasure() {
+    if (measureRows) measureRows.replaceChildren();
   }
 
   function updateLogicTiles(d) {
@@ -768,6 +920,7 @@
   function clearFrame() {
     lastFrame = null;
     clearTiles();
+    clearMeasure();
   }
 
   /* ---- command flow -------------------------------------------------- */
