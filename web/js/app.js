@@ -6,8 +6,17 @@
  *   transport.writeFrame(bytes) / setCallbacks(onFrame, onClose)
  *
  * v2 adds a SCOPE/LOGIC mode switch, up to 3 simultaneous ADC channels,
- * and a per-mode trigger channel. All configuration is sent as the new
- * 13-byte SET_CONFIG via ScopeProto.setConfig(seq, opts).
+ * a per-mode trigger channel and a settable trigger level. All
+ * configuration is sent as the new 13-byte SET_CONFIG via
+ * ScopeProto.setConfig(seq, opts).
+ *
+ * The dashboard card always drives plot.js's landscape "wide" face: that
+ * layout paints background + graticule + traces only, so the header, the
+ * time axis and the flag row are rendered here in HTML.
+ *
+ * Product rule: there is no analog front end on this board, so amplitudes
+ * are ALWAYS raw 12-bit ADC codes and logic rates are nominal. Nothing in
+ * this file may name volts.
  */
 (() => {
   "use strict";
@@ -20,13 +29,28 @@
      wire layer and deliberately exports no presentation strings.        */
   const CH_LABELS = ["CH1", "CH2", "CH3"];
 
+  /* plot.js layout + scale facts (mirror of LAYOUTS.wide).              */
+  const LAYOUT = "wide";
+  const GRID_COLS = 12;      /* time divisions across the wide face      */
+  const GRID_ROWS = 4;       /* vertical divisions = codes per division  */
+  const FULL_SCALE = 4095;   /* 12-bit ADC full scale, in codes          */
+
+  const THEME_KEY = "pico-scope-theme";
+  const DEFAULT_TRIG_LEVEL = 2048;
+
   /* ---- DOM --------------------------------------------------------- */
-  const canvas    = el("scope-canvas");
-  const $status   = el("status");
-  const $srLive   = el("sr-measurements");
-  const $hdrMode  = el("hdr-mode");
-  const $hdrBadge = el("hdr-badges");
-  const $capsLine = el("caps-line");
+  const canvas      = el("scope-canvas");
+  const $status     = el("status");
+  const $srLive     = el("sr-measurements");
+  const $hdrMode    = el("hdr-mode");
+  const $hdrBadge   = el("hdr-badges");
+  const $capsLine   = el("caps-line");
+  const $panelState = el("panel-state");
+  const $plotMeta   = el("plot-meta");
+  const $plotTdiv   = el("plot-tdiv");
+  const $plotWindow = el("plot-window");
+  const $plotRun    = el("plot-run");
+  const $plotRunTxt = el("plot-run-text");
 
   const buttons = {
     demo:       el("btn-demo"),
@@ -35,18 +59,22 @@
     stop:       el("btn-stop"),
     disconnect: el("btn-disconnect"),
     apply:      el("btn-apply"),
+    theme:      el("btn-theme"),
   };
 
   const ctrls = {
-    modeScope:   el("mode-scope"),
-    modeLogic:   el("mode-logic"),
-    ch:          [el("ch1"), el("ch2"), el("ch3")],
-    channelsBox: el("ctl-channels"),
-    trigMode:    el("trig-mode"),
-    trigEdge:    el("trig-edge"),
-    trigChannel: el("trig-channel"),
-    rate:        el("cfg-rate"),
-    count:       el("cfg-count"),
+    modeScope:    el("mode-scope"),
+    modeLogic:    el("mode-logic"),
+    ch:           [el("ch1"), el("ch2"), el("ch3")],
+    channelsBox:  el("ctl-channels"),
+    trigMode:     el("trig-mode"),
+    trigEdge:     el("trig-edge"),
+    trigChannel:  el("trig-channel"),
+    trigLevel:    el("cfg-trig-level"),
+    trigLevelOut: el("trig-level-out"),
+    trigLevelCell: el("cell-trig-level"),
+    rate:         el("cfg-rate"),
+    count:        el("cfg-count"),
   };
 
   const tileLabels = [
@@ -59,6 +87,7 @@
 
   /* ---- state ------------------------------------------------------- */
   let ctx = null;
+  let fittedW = 0;           /* clientWidth the backing store suits      */
   let transport = null;
   let connected = false;
   let running = false;
@@ -70,6 +99,10 @@
   let srClock = 0;
   let srLast = "";
   let applyTimer = 0;
+
+  /* Resolve the stored theme before the first paint so a light-theme
+     reader never sees a dark flash. */
+  applyTheme(storedTheme(), false);
 
   /* ---- small formatters -------------------------------------------- */
   function fmtRate(hz) {
@@ -84,17 +117,55 @@
     return hz.toFixed(1) + " Hz";
   }
 
+  /* Same unit style as plot.js fmtTime() so the HTML axis row and the
+     on-canvas scale row can never disagree.                              */
   function fmtTime(sec) {
     if (!Number.isFinite(sec) || sec <= 0) return "—";
     if (sec >= 1) return sec.toFixed(2) + " s";
     if (sec >= 1e-3) return (sec * 1e3).toFixed(2) + " ms";
-    if (sec >= 1e-6) return (sec * 1e6).toFixed(2) + " us";
+    if (sec >= 1e-6) return (sec * 1e6).toFixed(1) + " µs";
     return (sec * 1e9).toFixed(0) + " ns";
   }
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function setStatus(text, cls) {
     $status.textContent = text;
     $status.className = "status" + (cls ? " " + cls : "");
+  }
+
+  /* ---- theme -------------------------------------------------------- */
+  function currentTheme() {
+    return document.documentElement.dataset.theme === "light"
+      ? "light" : "dark";
+  }
+
+  function storedTheme() {
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      if (t === "light" || t === "dark") return t;
+    } catch (_) { /* storage blocked (private mode) — stay on the default */ }
+    return "dark";
+  }
+
+  /** Flip [data-theme], persist it and push the palette into plot.js.  */
+  function applyTheme(name, persist) {
+    const theme = name === "light" ? "light" : "dark";
+    document.documentElement.dataset.theme = theme;
+
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, theme); }
+      catch (_) { /* nothing to do — the theme still applies this session */ }
+    }
+
+    ScopePlot.setTheme(theme);
+
+    if (buttons.theme) {
+      const next = theme === "dark" ? "light" : "dark";
+      buttons.theme.setAttribute("aria-label", "Switch to " + next + " theme");
+      buttons.theme.title = "Switch to " + next + " theme";
+    }
+    return theme;
   }
 
   /* ---- configuration form ------------------------------------------ */
@@ -107,6 +178,22 @@
     let m = 0;
     ctrls.ch.forEach((cb, i) => { if (cb && cb.checked) m |= (1 << i); });
     return m || 0x01;
+  }
+
+  function currentTriggerLevel() {
+    const raw = ctrls.trigLevel ? parseInt(ctrls.trigLevel.value, 10) : NaN;
+    return clamp(Number.isFinite(raw) ? raw : DEFAULT_TRIG_LEVEL,
+                 0, FULL_SCALE);
+  }
+
+  /** Keep the readout (and the slider's filled portion) in step.       */
+  function syncTriggerLevelOut() {
+    const v = currentTriggerLevel();
+    if (ctrls.trigLevelOut) ctrls.trigLevelOut.textContent = String(v);
+    if (ctrls.trigLevel) {
+      ctrls.trigLevel.style.setProperty(
+        "--fill", ((v / FULL_SCALE) * 100).toFixed(2) + "%");
+    }
   }
 
   function modeDefaults(mode) {
@@ -167,8 +254,8 @@
     let count = parseInt(ctrls.count.value, 10);
     if (!Number.isFinite(rate) || rate <= 0) rate = dflt.rate;
     if (!Number.isFinite(count) || count <= 0) count = dflt.count;
-    rate = Math.min(rHi, Math.max(rLo, rate));
-    count = Math.min(cHi, Math.max(cLo, count));
+    rate = clamp(rate, rLo, rHi);
+    count = clamp(count, cLo, cHi);
 
     let trig = parseInt(ctrls.trigChannel.value, 10);
     if (!Number.isFinite(trig)) trig = L.TRIG_CHANNEL_NONE;
@@ -176,7 +263,9 @@
     return {
       rate,
       count,
-      triggerLevel: 2048,
+      /* the slider is the only source of the trigger level; the firmware
+         zeroes it for LOGIC captures, so it is always safe to send     */
+      triggerLevel: currentTriggerLevel(),
       edge: ctrls.trigEdge.value === "falling" ? 1 : 0,
       triggerMode: ctrls.trigMode.value === "normal"
         ? P.TRIG.NORMAL : P.TRIG.AUTO,
@@ -186,8 +275,13 @@
     };
   }
 
-  /** Reflect mode/capability constraints in the form itself. */
-  function syncControls() {
+  /**
+   * Reflect mode/capability constraints in the form itself.
+   * `applyModeDefaults` is set when the operator switches mode: each mode
+   * carries its own timebase/depth, and seeding them is what stops LOGIC
+   * from inheriting SCOPE's 100 kS/s.
+   */
+  function syncControls(applyModeDefaults) {
     const mode = currentMode();
     const logic = mode === P.MODE.LOGIC;
 
@@ -195,6 +289,17 @@
     if (ctrls.channelsBox) {
       ctrls.channelsBox.classList.toggle("muted", logic);
       ctrls.channelsBox.setAttribute("aria-disabled", logic ? "true" : "false");
+    }
+
+    /* LOGIC triggers on lane edges; the level stays readable but is
+       flagged as ignored rather than silently pretending to matter.    */
+    if (ctrls.trigLevelCell) {
+      ctrls.trigLevelCell.classList.toggle("is-inactive", logic);
+    }
+    if (ctrls.trigLevel) {
+      ctrls.trigLevel.setAttribute(
+        "aria-describedby",
+        logic ? "trig-level-note trig-level-na" : "trig-level-note");
     }
 
     const [rLo, rHi] = rateLimits(mode);
@@ -205,8 +310,14 @@
     ctrls.count.max = String(cHi);
 
     const dflt = modeDefaults(mode);
-    if (!ctrls.rate.value) ctrls.rate.value = String(dflt.rate);
-    if (!ctrls.count.value) ctrls.count.value = String(dflt.count);
+    const rateVal = parseInt(ctrls.rate.value, 10);
+    const countVal = parseInt(ctrls.count.value, 10);
+    if (applyModeDefaults || !Number.isFinite(rateVal)) {
+      ctrls.rate.value = String(dflt.rate);
+    }
+    if (applyModeDefaults || !Number.isFinite(countVal)) {
+      ctrls.count.value = String(dflt.count);
+    }
 
     const prevTrig = appliedCfg && appliedCfg.captureMode === mode
       ? appliedCfg.triggerChannel : L.TRIG_CHANNEL_NONE;
@@ -242,12 +353,13 @@
       return;
     }
 
+    /* every analog chip stays on the card; the masked-off ones dim so the
+       capture mask reads at a glance instead of vanishing               */
     const classes = ["ch1", "ch2", "ch3"];
     const mask = currentMask();
     for (let i = 0; i < L.ADC_CHANNELS; i++) {
-      if (!(mask & (1 << i))) continue;
       const b = document.createElement("span");
-      b.className = "badge " + classes[i];
+      b.className = "badge " + classes[i] + ((mask & (1 << i)) ? "" : " is-off");
       b.textContent = CH_LABELS[i];
       $hdrBadge.appendChild(b);
     }
@@ -257,6 +369,15 @@
     const list = [a, b, c, d];
     tileLabels.forEach((node, i) => {
       if (node && list[i] != null) node.textContent = list[i];
+    });
+  }
+
+  /** Colour the readout cells by meaning, not by position.             */
+  function setTileTones(list) {
+    [tiles.a, tiles.b, tiles.c, tiles.d].forEach((node, i) => {
+      if (!node || !list[i]) return;
+      const cell = node.closest(".cell");
+      if (cell) cell.dataset.tone = list[i];
     });
   }
 
@@ -322,7 +443,11 @@
     if (n < 2) { clearTiles(); return; }
 
     /* first enabled channel is always slot 0 of the interleaved buffer */
-    let min = 4095, max = 0, sum = 0;
+    const nChan = Math.max(1, d.channels || 1);
+    const frameMask = nChan >= 3 ? 0x07 : nChan === 2 ? 0x03 : 0x01;
+    const first = CH_LABELS[ScopePlot.slotsForMask(frameMask)[0]] || CH_LABELS[0];
+
+    let min = FULL_SCALE, max = 0, sum = 0;
     for (let i = 0; i < n; i++) {
       const v = d.samples[i * channels];
       if (v < min) min = v;
@@ -348,17 +473,15 @@
     }
     const freq = crossings * (d.rate / n);
 
-    const calibrated = !(d.flags & P.FLAGS.NOT_CALIB);
-    const scale = 3.3 / 4095;
-
-    setTileLabels("FREQ", "VPP", "RMS", "RATE");
-    tiles.a.textContent = freq > 0 ? fmtFreq(freq) + " (est)" : "—";
-    tiles.b.textContent = calibrated
-      ? (vpp * scale).toFixed(3) + " V"
-      : vpp + " (raw)";
-    tiles.c.textContent = calibrated
-      ? (rms * scale).toFixed(3) + " V"
-      : Math.round(rms) + " (raw)";
+    /* Amplitudes stay in raw ADC codes. The firmware always sets
+       SCOPE_FLAG_NOT_CALIB and there is no analog front end, so there is
+       no honest way to name a voltage here.                          */
+    setTileTones(["amber", "ink", "ink", "green"]);
+    setTileLabels(first + " · FREQ (EST)", first + " · VPP",
+                  first + " · RMS", "RATE");
+    tiles.a.textContent = freq > 0 ? fmtFreq(freq) : "—";
+    tiles.b.textContent = vpp + " CODES";
+    tiles.c.textContent = Math.round(rms) + " CODES";
     tiles.d.textContent = fmtRate(d.rate);
 
     announce(d);
@@ -385,7 +508,10 @@
 
     const span = d.rate > 0 ? n / d.rate : 0;
 
-    setTileLabels("EDGES", "LANES", "RATE", "SPAN");
+    /* logic lane rates come from an uncalibrated divider, so they are
+       labelled nominal rather than presented as exact                */
+    setTileTones(["amber", "ink", "green", "ink"]);
+    setTileLabels("EDGES", "LANES ACTIVE", "RATE (NOMINAL)", "SPAN");
     tiles.a.textContent = String(edges);
     tiles.b.textContent = active + " / " + L.LOGIC_CHANNELS;
     tiles.c.textContent = fmtRate(d.rate);
@@ -427,9 +553,26 @@
   }
 
   /* ---- rendering ---------------------------------------------------- */
-  function render() {
-    if (!ctx) return;
+  /* plot.js requires this exact order before a paint:
+       setLayout -> fitCanvas -> setTheme -> drawAll
+     setLayout() rewrites W/H, so the backing store has to be re-derived
+     after it and after any resize or theme change.                      */
+  function fitCanvasNow() {
+    ctx = ScopePlot.fitCanvas(canvas);
+    fittedW = canvas.clientWidth || ScopePlot.W;
+  }
 
+  function paint(opts) {
+    ScopePlot.setLayout(LAYOUT);
+
+    const cssW = canvas.clientWidth || ScopePlot.W;
+    if (!ctx || cssW !== fittedW) fitCanvasNow();
+
+    ScopePlot.setTheme(currentTheme());
+    ScopePlot.drawAll(ctx, opts);
+  }
+
+  function drawOpts() {
     const activeMask = currentMode() === P.MODE.LOGIC
       ? L.LOGIC_PIN_MASK
       : (appliedCfg && appliedCfg.captureMode === P.MODE.SCOPE
@@ -445,7 +588,7 @@
         ? L.LOGIC_PIN_MASK
         : (nChan >= 3 ? 0x07 : nChan === 2 ? 0x03 : 0x01);
 
-      ScopePlot.drawAll(ctx, {
+      return {
         mode: lastFrame.mode,
         channelMask: frameMask,
         samples: lastFrame.samples,
@@ -455,15 +598,59 @@
         running,
         flags: lastFrame.flags,
         triggerIndex: lastFrame.triggerIndex,
-      });
-    } else {
-      ScopePlot.drawAll(ctx, {
-        mode: currentMode(),
-        channelMask: activeMask,
-        running,
-        message: connected ? "Waiting for data…" : "No signal — press Demo",
-      });
+      };
     }
+
+    return {
+      mode: currentMode(),
+      channelMask: activeMask,
+      running,
+      message: connected ? "Waiting for data…" : "No signal — press Run the demo",
+    };
+  }
+
+  function render() {
+    paint(drawOpts());
+    syncCardChrome();
+  }
+
+  /** Header meta, time axis and RUN lamp — the chrome the wide layout
+      deliberately leaves to the page instead of the canvas.            */
+  function syncCardChrome() {
+    if ($plotRun) {
+      $plotRun.classList.toggle("is-run", !!running);
+      if ($plotRunTxt) $plotRunTxt.textContent = running ? "RUN" : "STOP";
+    }
+
+    const d = lastFrame;
+    if (!d) {
+      if ($plotMeta) {
+        $plotMeta.textContent = connected
+          ? "waiting for the first frame…"
+          : "no capture yet";
+      }
+      if ($plotTdiv) $plotTdiv.textContent = "T/DIV —";
+      if ($plotWindow) $plotWindow.textContent = "— WINDOW";
+      return;
+    }
+
+    const logic = d.mode === P.MODE.LOGIC;
+    const rate = d.rate || 0;
+    const count = d.count || 0;
+    const channels = logic ? L.LOGIC_CHANNELS : Math.max(1, d.channels || 1);
+
+    const parts = [
+      fmtRate(rate) + (logic ? " nominal" : ""),
+      count + " SAMPLES",
+      channels + (logic ? " LANES" : " CH"),
+    ];
+    /* the vertical scale is always in codes: 4095 over GRID_ROWS */
+    if (!logic) parts.push(Math.round(FULL_SCALE / GRID_ROWS) + " C/DIV");
+    if ($plotMeta) $plotMeta.textContent = parts.join("  ·  ");
+
+    const window = rate > 0 ? count / rate : 0;
+    if ($plotTdiv) $plotTdiv.textContent = "T/DIV " + fmtTime(window / GRID_COLS);
+    if ($plotWindow) $plotWindow.textContent = fmtTime(window) + " WINDOW";
   }
 
   function clearFrame() {
@@ -498,8 +685,6 @@
     const cfg = currentConfig();
     const mode = cfg.captureMode;
 
-    /* fall back to defaults for the OTHER mode so the device is never
-     * asked for a rate that the current UI mode cannot express        */
     const waiter = awaitFrame(P.MSG.ACK, 3000);
 
     try {
@@ -532,8 +717,9 @@
 
     if (announceIt) {
       setStatus("applied · " + fmtRate(perCh) +
-        (mode === P.MODE.LOGIC ? " per lane" : " per channel") +
-        " · " + ack.appliedCount + " samples", "ok");
+        (mode === P.MODE.LOGIC ? " per lane (nominal)" : " per channel") +
+        " · " + ack.appliedCount + " samples · trigger level " +
+        cfg.triggerLevel + " code" + (cfg.triggerLevel === 1 ? "" : "s"), "ok");
     }
 
     syncHeader();
@@ -564,7 +750,7 @@
 
     const t = kind === "demo" ? DemoTransport() : SerialTransport();
     if (!t.supported) {
-      setStatus("Web Serial unavailable — use Demo or Chrome over HTTPS", "warn");
+      setStatus("Web Serial unavailable — use the demo or Chrome over HTTPS", "warn");
       return;
     }
 
@@ -592,10 +778,12 @@
     const c = await handshake();
     if (c) {
       const mode = currentMode();
+      let forced = false;
       if (mode === P.MODE.LOGIC && !(c.capabilities & P.CAPS.LOGIC)) {
         ctrls.modeScope.checked = true;
+        forced = true;
       }
-      syncControls();
+      syncControls(forced);
       await applyConfig(true);
     }
   }
@@ -625,6 +813,11 @@
     buttons.run.disabled = !connected || running;
     buttons.stop.disabled = !connected || !running;
     if (buttons.apply) buttons.apply.disabled = !connected;
+
+    if ($panelState) {
+      $panelState.textContent = connected ? "CONNECTED" : "DISCONNECTED";
+      $panelState.classList.toggle("is-on", connected);
+    }
   }
 
   /* ---- events -------------------------------------------------------- */
@@ -639,6 +832,7 @@
     running = true;
     syncButtons();
     setStatus("capturing…", "ok");
+    render();
     loop();
   });
 
@@ -653,20 +847,32 @@
 
   buttons.disconnect.addEventListener("click", () => { disconnect(); });
 
-  ctrls.modeScope.addEventListener("change", () => {
-    if (!ctrls.modeScope.checked) return;
-    syncControls();
+  if (buttons.theme) {
+    buttons.theme.addEventListener("click", () => {
+      const next = currentTheme() === "dark" ? "light" : "dark";
+      applyTheme(next, true);
+      /* the palette changed: re-derive the backing store, then repaint */
+      fittedW = 0;
+      render();
+    });
+  }
+
+  function onModeChange() {
+    /* each mode owns its own timebase and depth — seed them on switch */
+    syncControls(true);
     clearFrame();
     render();
     applyConfigSoon();
+  }
+
+  ctrls.modeScope.addEventListener("change", () => {
+    if (!ctrls.modeScope.checked) return;
+    onModeChange();
   });
 
   ctrls.modeLogic.addEventListener("change", () => {
     if (!ctrls.modeLogic.checked) return;
-    syncControls();
-    clearFrame();
-    render();
-    applyConfigSoon();
+    onModeChange();
   });
 
   ctrls.ch.forEach((cb) => {
@@ -680,20 +886,39 @@
     });
   });
 
+  /* the slider redraws its readout on every pixel, but only writes to the
+     board when the gesture ends — the 150 ms debounce then collapses
+     repeated changes into one SET_CONFIG                              */
+  if (ctrls.trigLevel) {
+    ctrls.trigLevel.addEventListener("input", syncTriggerLevelOut);
+  }
+
   [ctrls.trigMode, ctrls.trigEdge, ctrls.trigChannel,
-   ctrls.rate, ctrls.count].forEach((node) => {
+   ctrls.rate, ctrls.count, ctrls.trigLevel].forEach((node) => {
     if (!node) return;
     node.addEventListener("change", () => applyConfigSoon());
   });
 
   window.addEventListener("resize", () => {
-    ScopePlot.fitCanvas(canvas);
+    fittedW = 0;
     render();
   });
 
+  if (typeof ResizeObserver !== "undefined") {
+    /* the card can change width without a window resize (fonts, zoom) */
+    const ro = new ResizeObserver(() => {
+      const w = canvas.clientWidth;
+      if (w && w !== fittedW) {
+        fittedW = 0;
+        render();
+      }
+    });
+    ro.observe(canvas);
+  }
+
   window.addEventListener("load", () => {
-    ScopePlot.fitCanvas(canvas);
-    ctx = canvas.getContext("2d");
+    applyTheme(storedTheme(), false);
+    syncTriggerLevelOut();
 
     if (ctrls.rate) ctrls.rate.value = String(L.DEFAULT_RATE_HZ);
     if (ctrls.count) ctrls.count.value = String(L.SAMPLE_COUNT);

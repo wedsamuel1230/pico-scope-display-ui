@@ -1,122 +1,304 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0d1117">
-  <meta name="description" content="Browser UI for the Pico Scope Display UI firmware: a 3-channel ADC oscilloscope and an 8-channel logic analyzer over Web Serial, with a built-in simulator.">
-  <title>Pico Scope Display UI</title>
-  <link rel="stylesheet" href="css/scope.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pico Scope — browser oscilloscope &amp; logic analyzer</title>
+<meta name="description" content="Control an RP2040 scope from the browser: three analog channels, eight logic lanes, trigger level and timing. No install, no analog front end — amplitudes are raw 12-bit ADC codes.">
+<meta name="color-scheme" content="dark light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230a0a0c'/%3E%3Cpath%20d='M4%2020c3-11%206-11%209%200s6%2011%209%200'%20fill='none'%20stroke='%232997ff'%20stroke-width='2.4'%20stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/scope.css">
 </head>
-<body data-mode="scope">
-  <a class="skip-link" href="#scope-canvas">Skip to display</a>
+<body>
 
-  <header class="topbar">
-    <h1>
-      <span id="hdr-mode">SCOPE</span>
-      <span id="hdr-badges" class="badges"></span>
-    </h1>
-    <div class="actions">
-      <button id="btn-demo" class="primary" type="button"
-              title="Run the built-in simulator — no hardware needed">Demo</button>
-      <button id="btn-connect" type="button"
-              title="Connect to a Pico over Web Serial (Chrome, HTTPS)">Connect</button>
-      <button id="btn-run" type="button" disabled>Run</button>
-      <button id="btn-stop" type="button" disabled>Stop</button>
-      <button id="btn-disconnect" type="button" disabled>Disconnect</button>
+<a class="skip-link" href="#stage">Skip to the plot</a>
+
+<!-- ---------- Nav ---------- -->
+<header class="nav">
+  <div class="nav-inner">
+    <span class="wordmark">PICO SCOPE</span>
+
+    <nav class="nav-links" aria-label="Sections">
+      <a class="nav-link" href="#stage">Overview</a>
+      <a class="nav-link" href="#console">Console</a>
+      <a class="nav-link" href="#specs">Specs</a>
+      <a class="nav-link" href="https://github.com/wedsamuel1230/pico-scope-display-ui#readme">Docs</a>
+    </nav>
+
+    <div class="nav-actions">
+      <button class="theme-btn" id="btn-theme" type="button"
+              aria-label="Switch to light theme" title="Switch theme">
+        <span id="btn-theme-icon" aria-hidden="true">
+          <svg class="i-moon" width="15" height="15" viewBox="0 0 16 16" fill="none">
+            <path d="M13.4 9.7A5.8 5.8 0 0 1 6.3 2.6 6 6 0 1 0 13.4 9.7Z"
+                  stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+          </svg>
+          <svg class="i-sun" width="15" height="15" viewBox="0 0 16 16" fill="none"
+               stroke="currentColor" stroke-width="1.3" stroke-linecap="round">
+            <circle cx="8" cy="8" r="3.1"/>
+            <path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.1 3.1l1.1 1.1M11.8 11.8l1.1 1.1M12.9 3.1l-1.1 1.1M4.2 11.8l-1.1 1.1"/>
+          </svg>
+        </span>
+      </button>
+      <a class="pill pill--accent pill--xs" href="#console">Launch console</a>
     </div>
-    <div id="status" class="status" aria-live="polite">not connected</div>
-  </header>
+  </div>
+</header>
 
-  <main>
-    <section class="config" aria-label="Capture settings">
-      <fieldset class="ctl">
-        <legend>Mode</legend>
-        <label><input type="radio" id="mode-scope" name="mode" value="scope" checked> Scope</label>
-        <label><input type="radio" id="mode-logic" name="mode" value="logic"> Logic</label>
-      </fieldset>
+<!-- ---------- Hero ---------- -->
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">RP2040 · WEB SERIAL · NO INSTALL</p>
 
-      <fieldset class="ctl" id="ctl-channels">
-        <legend>ADC channels</legend>
-        <label><input type="checkbox" id="ch1" checked> CH1</label>
-        <label><input type="checkbox" id="ch2"> CH2</label>
-        <label><input type="checkbox" id="ch3"> CH3</label>
-      </fieldset>
+    <h1 class="hero-title">
+      <span>See the signal,</span>
+      <span>not the setup.</span>
+    </h1>
 
-      <fieldset class="ctl">
-        <legend>Trigger</legend>
-        <label>Mode
-          <select id="trig-mode">
-            <option value="auto" selected>Auto</option>
-            <option value="normal">Normal</option>
-          </select>
-        </label>
-        <label>Edge
-          <select id="trig-edge">
-            <option value="rising" selected>Rising</option>
+    <p class="hero-sub">A three-channel oscilloscope and eight-lane logic analyzer that runs entirely in the browser.</p>
+    <p class="hero-sub">Timebase, trigger level and capture depth from one page.</p>
+
+    <div class="hero-actions">
+      <a class="pill pill--accent pill--lg" href="#console">Open the console</a>
+      <a class="pill pill--ghost pill--lg"
+         href="https://github.com/wedsamuel1230/pico-scope-display-ui#readme">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<main class="sheet">
+
+  <!-- ---------- The plot card ---------- -->
+  <section class="section section--stage" id="stage">
+    <h2 class="visually-hidden">Live capture</h2>
+
+    <div class="plot-card">
+
+      <div class="plot-head">
+        <div class="plot-brand">
+          <span class="plot-mode" id="hdr-mode">SCOPE</span>
+          <span class="chips" id="hdr-badges"></span>
+        </div>
+
+        <p class="plot-meta" id="plot-meta">no capture yet</p>
+
+        <p class="plot-run" id="plot-run">
+          <span class="plot-dot" aria-hidden="true"></span>
+          <span id="plot-run-text">STOP</span>
+        </p>
+      </div>
+
+      <div class="plot-scroll">
+        <canvas class="plot-canvas" id="scope-canvas" width="1144" height="320" role="img"
+                aria-label="Live capture plot: up to three analog channels over a twelve-division time base, or eight stacked logic lanes. Amplitudes are raw 12-bit ADC codes, listed beneath the plot."></canvas>
+      </div>
+
+      <div class="plot-axis">
+        <span class="axis-origin">0</span>
+        <span class="axis-tdiv" id="plot-tdiv">T/DIV —</span>
+        <span class="axis-window" id="plot-window">— WINDOW</span>
+      </div>
+
+      <div class="plot-tiles">
+        <div class="cell cell--tile" data-tone="amber">
+          <span class="cell-label" id="tile-label-1">CH1 · FREQ</span>
+          <span class="cell-value" id="m-freq">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="ink">
+          <span class="cell-label" id="tile-label-2">CH1 · VPP</span>
+          <span class="cell-value" id="m-vpp">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="ink">
+          <span class="cell-label" id="tile-label-3">CH1 · RMS</span>
+          <span class="cell-value" id="m-rms">—</span>
+        </div>
+        <div class="cell cell--tile" data-tone="green">
+          <span class="cell-label" id="tile-label-4">RATE</span>
+          <span class="cell-value" id="m-rate">—</span>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ---------- Metrics ---------- -->
+  <section class="section section--metrics" id="specs">
+    <h2 class="visually-hidden">By the numbers</h2>
+    <p class="eyebrow eyebrow--sub">WHAT IT SEES</p>
+
+    <div class="metrics">
+      <div class="metric">
+        <span class="metric-value tone-accent">3</span>
+        <span class="metric-label">ANALOG CHANNELS</span>
+        <svg class="spark tone-accent" viewBox="0 0 240 24" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 12 C 8 3 22 3 30 12 S 52 21 60 12 S 82 3 90 12 S 112 21 120 12 S 142 3 150 12 S 172 21 180 12 S 202 3 210 12 S 232 21 240 12"
+                fill="none" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+      </div>
+
+      <div class="metric">
+        <span class="metric-value tone-cyan">8</span>
+        <span class="metric-label">LOGIC LANES</span>
+        <svg class="spark tone-cyan" viewBox="0 0 240 24" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 12 C 8 3 22 3 30 12 S 52 21 60 12 S 82 3 90 12 S 112 21 120 12 S 142 3 150 12 S 172 21 180 12 S 202 3 210 12 S 232 21 240 12"
+                fill="none" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+      </div>
+
+      <div class="metric">
+        <span class="metric-value tone-amber">500 kS/s</span>
+        <span class="metric-label">MAX ANALOG RATE</span>
+        <svg class="spark tone-amber" viewBox="0 0 240 24" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 12 C 8 3 22 3 30 12 S 52 21 60 12 S 82 3 90 12 S 112 21 120 12 S 142 3 150 12 S 172 21 180 12 S 202 3 210 12 S 232 21 240 12"
+                fill="none" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+      </div>
+
+      <div class="metric">
+        <span class="metric-value tone-magenta">8192</span>
+        <span class="metric-label">LOGIC SAMPLES DEEP</span>
+        <svg class="spark tone-magenta" viewBox="0 0 240 24" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 12 C 8 3 22 3 30 12 S 52 21 60 12 S 82 3 90 12 S 112 21 120 12 S 142 3 150 12 S 172 21 180 12 S 202 3 210 12 S 232 21 240 12"
+                fill="none" stroke="currentColor" stroke-width="1.6"/>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Controls ---------- -->
+  <section class="section section--console" id="console">
+    <p class="eyebrow">FULL REMOTE CONTROL</p>
+    <h2 class="h2">Every knob on the page.</h2>
+    <p class="section-sub">Timebase, trigger level, edge, source and depth — written straight to the board.</p>
+
+    <form class="panel" id="ctl-panel" onsubmit="return false" aria-labelledby="panel-title">
+
+      <div class="panel-head">
+        <h3 class="panel-title" id="panel-title">CAPTURE SETTINGS</h3>
+        <span class="panel-state" id="panel-state">DISCONNECTED</span>
+      </div>
+
+      <div class="cells">
+        <div class="cell">
+          <span class="cell-label" id="lbl-mode">MODE</span>
+          <div class="seg" role="radiogroup" aria-labelledby="lbl-mode">
+            <label class="seg-item">
+              <input type="radio" name="mode" id="mode-scope" value="scope" checked>
+              <span>SCOPE</span>
+            </label>
+            <label class="seg-item">
+              <input type="radio" name="mode" id="mode-logic" value="logic">
+              <span>LOGIC</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="cell">
+          <label class="cell-label" for="cfg-rate">RATE (S/s)</label>
+          <input class="cell-input" type="number" id="cfg-rate" min="1000" max="500000"
+                 step="1000" inputmode="numeric" aria-describedby="rate-note">
+          <p class="cell-note" id="rate-note">Total ADC rate · lane rate in logic mode</p>
+        </div>
+
+        <div class="cell">
+          <label class="cell-label" for="cfg-count">SAMPLES</label>
+          <input class="cell-input" type="number" id="cfg-count" min="64" max="2048"
+                 step="1" inputmode="numeric" aria-describedby="count-note">
+          <p class="cell-note" id="count-note">Per channel · per capture in logic mode</p>
+        </div>
+
+        <div class="cell" id="cell-trig-level">
+          <div class="cell-row">
+            <label class="cell-label" for="cfg-trig-level">TRIGGER LEVEL</label>
+            <output class="cell-output" id="trig-level-out" for="cfg-trig-level">2048</output>
+          </div>
+          <input class="range" type="range" id="cfg-trig-level" min="0" max="4095" step="1"
+                 value="2048" aria-describedby="trig-level-note">
+          <p class="cell-note" id="trig-level-note">Raw 12-bit ADC code, 0–4095</p>
+          <p class="visually-hidden" id="trig-level-na">Ignored in logic mode: the source lane triggers on edges.</p>
+        </div>
+
+        <div class="cell">
+          <label class="cell-label" for="trig-edge">EDGE</label>
+          <select class="cell-input" id="trig-edge">
+            <option value="rising">Rising</option>
             <option value="falling">Falling</option>
           </select>
-        </label>
-        <label>Source
-          <select id="trig-channel"></select>
-        </label>
-      </fieldset>
+        </div>
 
-      <fieldset class="ctl" id="ctl-timing">
-        <legend>Timing</legend>
-        <label>Rate (S/s)
-          <input type="number" id="cfg-rate" min="1000" max="500000"
-                 step="1000" value="100000">
-        </label>
-        <label>Samples
-          <input type="number" id="cfg-count" min="64" max="2048"
-                 step="64" value="1024">
-        </label>
-        <button id="btn-apply" type="button" disabled>Apply</button>
-      </fieldset>
-
-      <p id="caps-line" class="caps">not connected</p>
-    </section>
-
-    <canvas id="scope-canvas" width="240" height="320" role="img"
-            aria-label="Capture display: up to three oscilloscope traces, or eight stacked logic lanes, portrait 240 by 320">
-      Capture display. Measurements are listed below.
-    </canvas>
-
-    <section class="readouts" aria-label="Measurements">
-      <div class="tile">
-        <span class="tile-label" id="tile-label-1">FREQ</span>
-        <span id="m-freq" class="tile-value">—</span>
+        <div class="cell">
+          <label class="cell-label" for="trig-channel">SOURCE</label>
+          <select class="cell-input" id="trig-channel"></select>
+        </div>
       </div>
-      <div class="tile">
-        <span class="tile-label" id="tile-label-2">VPP</span>
-        <span id="m-vpp" class="tile-value">—</span>
-      </div>
-      <div class="tile">
-        <span class="tile-label" id="tile-label-3">RMS</span>
-        <span id="m-rms" class="tile-value">—</span>
-      </div>
-      <div class="tile">
-        <span class="tile-label" id="tile-label-4">RATE</span>
-        <span id="m-rate" class="tile-value">—</span>
-      </div>
-    </section>
 
-    <p id="sr-measurements" class="visually-hidden" aria-live="polite"></p>
+      <div class="cells">
+        <div class="cell">
+          <label class="cell-label" for="trig-mode">TRIGGER MODE</label>
+          <select class="cell-input" id="trig-mode">
+            <option value="auto">Auto</option>
+            <option value="normal" selected>Normal</option>
+          </select>
+          <p class="cell-note">Normal holds the frame until a real edge is found</p>
+        </div>
 
-    <p class="note">
-      <b>Demo</b> runs a deterministic simulator in the browser — no hardware.
-      <b>Connect</b> opens the real board over Web Serial (Chrome or Edge, HTTPS only).
-      There is no analog front end, so amplitudes are shown as raw 12-bit ADC codes
-      (<b>C/DIV</b>, never V/DIV) and every capture is flagged uncalibrated.
-      Logic-analyzer sample rates are nominal.
-    </p>
-  </main>
+        <div class="cell" id="ctl-channels">
+          <span class="cell-label" id="lbl-channels">CHANNELS</span>
+          <div class="choices" role="group" aria-labelledby="lbl-channels">
+            <label class="choice ch1">
+              <input type="checkbox" id="ch1" checked>
+              <span>CH1</span>
+            </label>
+            <label class="choice ch2">
+              <input type="checkbox" id="ch2">
+              <span>CH2</span>
+            </label>
+            <label class="choice ch3">
+              <input type="checkbox" id="ch3">
+              <span>CH3</span>
+            </label>
+          </div>
+          <p class="cell-note">Analog channels; logic mode always captures all eight lanes</p>
+        </div>
+      </div>
 
-  <script src="js/protocol.js"></script>
-  <script src="js/serial.js"></script>
-  <script src="js/plot.js"></script>
-  <script src="js/app.js"></script>
+      <div class="panel-actions">
+        <button class="pill pill--accent" type="button" id="btn-demo">Run the demo</button>
+        <button class="pill pill--ghost" type="button" id="btn-connect">Connect to a board</button>
+        <button class="pill" type="button" id="btn-run" disabled>Run</button>
+        <button class="pill" type="button" id="btn-stop" disabled>Stop</button>
+        <button class="pill pill--sm" type="button" id="btn-apply" disabled>Apply settings</button>
+        <button class="pill pill--sm" type="button" id="btn-disconnect" disabled>Disconnect</button>
+      </div>
+
+      <p class="status" id="status" role="status">not connected</p>
+      <p class="caps" id="caps-line"></p>
+    </form>
+  </section>
+
+</main>
+
+<!-- ---------- Footer ---------- -->
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <b>Pico Scope Display UI</b>
+        <p>RP2040 · Pico SDK · MIT License · no analog front end — amplitudes are raw 12-bit ADC codes</p>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/wedsamuel1230/pico-scope-display-ui#readme">Docs</a>
+        <a href="https://github.com/wedsamuel1230/pico-scope-display-ui">GitHub</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<p class="visually-hidden" id="sr-measurements" aria-live="polite"></p>
+
+<script src="js/protocol.js"></script>
+<script src="js/plot.js"></script>
+<script src="js/serial.js"></script>
+<script src="js/app.js"></script>
 </body>
 </html>

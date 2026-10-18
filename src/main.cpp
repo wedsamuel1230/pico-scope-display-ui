@@ -266,7 +266,7 @@ static void board_bring_up(void)
     if (s_lcd_ok) {
         scope_view_init();
         scope_view_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
-                               s_cfg.channel_mask, true);
+                               s_cfg.channel_mask, false);
     } else {
         /* No panel detected: leave the LED lit so the fault is visible. */
         gpio_put(SCOPE_LED_GPIO, 1);
@@ -307,7 +307,7 @@ static void handle_usb(void)
 
         if (s_lcd_ok && chrome_dirty) {
             scope_view_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
-                                   s_cfg.channel_mask, true);
+                                   s_cfg.channel_mask, s_usb_run_requested);
         }
 
         usb_link_send_ack(req.seq, status, applied_rate, applied_count);
@@ -357,11 +357,17 @@ int main(void)
         uint32_t rate  = 0u;
         uint8_t  chans = 0u;
 
-        if (s_usb_run_requested) {
-            s_state = ST_ARM;
-            if (s_lcd_ok)
-                scope_view_set_running(true);
+        if (!s_usb_run_requested) {
+            /* Nothing was requested. Hold the last LCD frame instead of
+             * repainting the panel every loop, which refreshed it ~20x/s. */
+            s_state = ST_IDLE;
+            sleep_ms(20);
+            continue;
         }
+
+        s_state = ST_ARM;
+        if (s_lcd_ok)
+            scope_view_set_running(true);
 
         s_state = ST_CAPTURE;
         capture_once(&flags, &trig, &rate, &chans);

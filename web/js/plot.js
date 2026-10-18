@@ -11,16 +11,49 @@
 "use strict";
 
 const ScopePlot = (() => {
-  const W = 240, H = 320;
-  const HEADER_H = 18;
-  const WAVE_Y = 18, WAVE_H = 242;
-  const ROW_H = 40;
-  const SCALE_Y = 262, SCALE_H = 16;
-  const STATE_Y = 280, STATE_H = 18;
+  /* Geometry is mutable so one renderer serves both faces:
+       device — the real 240x320 panel, full on-canvas chrome
+       wide   — the desktop plot card, where the chrome lives in HTML  */
+  const LAYOUTS = {
+    device: {
+      W: 240, H: 320, HEADER_H: 18,
+      WAVE_Y: 18, WAVE_H: 242, ROW_H: 40,
+      SCALE_Y: 262, SCALE_H: 16, STATE_Y: 280, STATE_H: 18,
+      COLS: 8, ROWS: 6, chrome: true,
+    },
+    wide: {
+      W: 1144, H: 320, HEADER_H: 0,
+      WAVE_Y: 0, WAVE_H: 320, ROW_H: 80,
+      SCALE_Y: 320, SCALE_H: 0, STATE_Y: 320, STATE_H: 0,
+      COLS: 12, ROWS: 4, chrome: false,
+    },
+  };
+
+  let W = 240, H = 320;
+  let HEADER_H = 18;
+  let WAVE_Y = 18, WAVE_H = 242;
+  let ROW_H = 40;
+  let SCALE_Y = 262, SCALE_H = 16;
+  let STATE_Y = 280, STATE_H = 18;
+  let GRID_COLS = 8, GRID_ROWS = 6;
+  let CHROME = true;
+  let TRIG_COL = Math.round(W / 8);
 
   const LANES = 8;
-  const LANE_H = Math.floor(WAVE_H / LANES);   /* 30 */
+  let LANE_H = Math.floor(WAVE_H / LANES);     /* 30 device, 40 wide */
   const LANE_LABEL_W = 14;
+
+  function setLayout(name) {
+    const L = LAYOUTS[name === "wide" ? "wide" : "device"];
+    W = L.W; H = L.H; HEADER_H = L.HEADER_H;
+    WAVE_Y = L.WAVE_Y; WAVE_H = L.WAVE_H; ROW_H = L.ROW_H;
+    SCALE_Y = L.SCALE_Y; SCALE_H = L.SCALE_H;
+    STATE_Y = L.STATE_Y; STATE_H = L.STATE_H;
+    GRID_COLS = L.COLS; GRID_ROWS = L.ROWS; CHROME = L.chrome;
+    LANE_H = Math.floor(WAVE_H / LANES);
+    TRIG_COL = Math.round(W / 8);
+    return { W: W, H: H };
+  }
 
   const C = {
     bg: "#000",
@@ -41,6 +74,42 @@ const ScopePlot = (() => {
   /* digital lane colours (web only; the LCD uses one colour for logic)  */
   const LANE_COLOR = ["#ffd23f", "#4fd1ff", "#7ee787", "#ff9f68",
                       "#c792ea", "#f78c6c", "#89ddff", "#ffe082"];
+
+  /* theme palettes: index 0 = dark (matches the LCD face), 1 = light.
+     app.js calls ScopePlot.setTheme() from its theme toggle, then
+     re-renders. Colours are mutated in place so the closures above
+     keep pointing at the same objects.                                */
+  const THEMES = [
+    {
+      bg: "#000000", grid: "#26323f", text: "#e6edf3", dim: "#7d8b99",
+      amber: "#ffb000", green: "#38d95b", err: "#ff5252", trace: "#c9e94f",
+      ch: ["#fc8c00", "#00d4ff", "#ff4fd8"],
+      lane: ["#ffd23f", "#4fd1ff", "#7ee787", "#ff9f68",
+             "#c792ea", "#f78c6c", "#89ddff", "#ffe082"],
+    },
+    {
+      bg: "#f8f9fb", grid: "#d9e0ea", text: "#1c2128", dim: "#6b7380",
+      amber: "#d98c0d", green: "#21a13b", err: "#d1242f", trace: "#3f6212",
+      ch: ["#c2410c", "#0e7490", "#be185d"],
+      lane: ["#b45309", "#0369a1", "#15803d", "#c2410c",
+             "#7e22ce", "#be123c", "#0e7490", "#a16207"],
+    },
+  ];
+
+  function setTheme(name) {
+    const t = THEMES[name === "light" ? 1 : 0];
+    C.bg = t.bg;
+    C.grid = t.grid;
+    C.text = t.text;
+    C.dim = t.dim;
+    C.amber = t.amber;
+    C.green = t.green;
+    C.err = t.err;
+    C.trace = t.trace;
+    for (let i = 0; i < CH_COLOR.length; i += 1) CH_COLOR[i] = t.ch[i];
+    for (let i = 0; i < LANE_COLOR.length; i += 1) LANE_COLOR[i] = t.lane[i];
+    return t;
+  }
 
   function fitCanvas(canvas) {
     /* keep the 240:320 ratio exactly; render at an integer device scale
@@ -64,12 +133,12 @@ const ScopePlot = (() => {
     ctx.strokeStyle = C.grid;
     ctx.lineWidth = 0.75;
     ctx.beginPath();
-    for (let d = 0; d <= 8; d++) {
-      const x = d * (W / 8) - 0.5;
+    for (let d = 0; d <= GRID_COLS; d++) {
+      const x = d * (W / GRID_COLS) - 0.5;
       if (x >= W) break;
       ctx.moveTo(x, WAVE_Y); ctx.lineTo(x, WAVE_Y + WAVE_H);
     }
-    for (let d = 0; d <= 6; d++) {
+    for (let d = 0; d <= GRID_ROWS; d++) {
       const y = WAVE_Y + d * ROW_H - 0.5;
       if (y > WAVE_Y + WAVE_H) break;
       ctx.moveTo(0, y); ctx.lineTo(W, y);
@@ -78,7 +147,7 @@ const ScopePlot = (() => {
   }
 
   /* ---- SCOPE: overlaid analog traces ------------------------------- */
-  const TRIG_COL = Math.round(W / 8); /* trigger sits ~1/8 from left */
+  /* TRIG_COL is recomputed by setLayout(); the trigger sits ~1/8 in.   */
 
   function drawTrace(ctx, samples, channels, slot, triggerIndex, color) {
     if (!samples || channels < 1) return;
@@ -325,7 +394,7 @@ const ScopePlot = (() => {
 
     ctx.fillStyle = C.bg;
     ctx.fillRect(0, 0, W, H);
-    drawHeader(ctx, mode, mask, !!o.running);
+    if (CHROME) drawHeader(ctx, mode, mask, !!o.running);
 
     if (mode === ScopeProto.MODE.LOGIC) {
       clearWave(ctx);
@@ -351,8 +420,10 @@ const ScopePlot = (() => {
       }
     }
 
-    drawScaleRow(ctx, mode, o.rate || 0, o.count || 0, o.channels || 1);
-    drawStateRow(ctx, o.flags || 0, !!o.running);
+    if (CHROME) {
+      drawScaleRow(ctx, mode, o.rate || 0, o.count || 0, o.channels || 1);
+      drawStateRow(ctx, o.flags || 0, !!o.running);
+    }
   }
 
   function drawTraceOnly(ctx, opts) {
@@ -383,7 +454,10 @@ const ScopePlot = (() => {
   }
 
   return {
-    W, H, CH_COLOR, CH_NAME, LANE_COLOR,
+    get W() { return W; },
+    get H() { return H; },
+    CH_COLOR, CH_NAME, LANE_COLOR, LANES,
+    setTheme, setLayout,
     fitCanvas, drawAll, drawTraceOnly,
     drawTrace, drawGrid, clearWave, drawHeader, drawLogic,
     drawScaleRow, drawStateRow, slotsForMask,
