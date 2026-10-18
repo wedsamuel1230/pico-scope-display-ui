@@ -2,10 +2,12 @@
  * adc_capture.cpp — analog capture engine (ADC + DMA, round-robin)
  *
  * One DMA channel streams the ADC FIFO into a staging buffer while the
- * enabled channels are converted round-robin. Each FIFO word carries
- * its channel in bits 15:12, so adc_deinterleave() maps the stream back
- * onto dense per-channel slots without assuming a round-robin start
- * order.
+ * enabled channels are converted round-robin. An RP2040 ADC FIFO word
+ * carries NO channel tag (bits 11:0 are the result, bit 15 the error
+ * flag, bits 14:12 reserved), so adc_deinterleave() derives the channel
+ * from the sample POSITION: the ADC is pointed at the lowest enabled
+ * channel and then advances through the enabled channels in ascending
+ * order, so sample `i` belongs to dense slot `i % channels`.
  */
 #include "adc_capture.h"
 
@@ -32,7 +34,7 @@ static uint8_t   s_channels = 1;
 static uint8_t   s_mask = 0x01u;
 static uint16_t *s_dst = nullptr;
 
-/* Raw round-robin words: bits 11:0 result, bits 15:12 channel. */
+/* Raw round-robin words in ascending slot order: bits 11:0 result. */
 static uint16_t s_stage[SCOPE_MAX_SAMPLE_COUNT * SCOPE_ADC_CHANNELS];
 
 static uint8_t clamp_mask(uint8_t mask)
@@ -60,8 +62,8 @@ void adc_capture_init(void)
     }
     adc_select_input(SCOPE_ADC_INPUT);
     adc_set_round_robin(0u);
-    /* byte_shift = false keeps the full 16-bit FIFO word (result +
-     * channel tag), which the de-interleaver relies on.                 */
+    /* byte_shift = false keeps the full 16-bit FIFO word; the de-interleaver
+     * masks the 12-bit result out of it.                                */
     adc_fifo_setup(true, false, 1, false, false);
 
     if (s_dma_ch < 0) {

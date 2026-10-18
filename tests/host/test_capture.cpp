@@ -3,7 +3,7 @@
  *
  * Covers the two pieces of multi-ADC / logic-analyzer logic that are
  * deliberately free of the Pico SDK, so they run on the dev machine:
- *   capture/deinterleave.cpp — channel-tag slot mapping and packing
+ *   capture/deinterleave.cpp — dense-slot packing of the untagged ADC stream
  *   capture/trigger.cpp      — analog edge trigger + digital bit trigger
  *
  * Convention under test (matches src/capture/logic_capture.cpp):
@@ -23,10 +23,15 @@ static int g_fail = 0;
     else { printf("  FAIL  %s\n", (name)); ++g_fail; } \
 } while (0)
 
-/* ADC FIFO word: bits 15:12 channel tag, bits 11:0 conversion result. */
-static uint16_t adc_word(uint8_t channel, uint16_t value)
+/* ADC FIFO word: bits 11:0 conversion result, bits 15:12 reserved.
+ *
+ * An RP2040 ADC FIFO word carries NO channel tag — channel identity comes
+ * from the sample POSITION, so the fixtures below lay the staging buffer
+ * out in ascending slot order and the de-interleaver never looks at the
+ * high nibble. */
+static uint16_t adc_word(uint16_t value)
 {
-    return (uint16_t)(((uint16_t)channel << 12) | (value & 0x0FFFu));
+    return (uint16_t)(value & 0x0FFFu);
 }
 
 /* ------------------------------------------------------------------ */
@@ -63,10 +68,11 @@ static void test_deinterleave_two_channels(void)
     uint16_t dst[8];
     uint16_t stage[8];
 
-    /* Round-robin starts on ch2: tags, not position, decide the slot. */
+    /* mask 0x05 = CH0 + CH2: sample `i` belongs to dense slot `i % 2`,
+     * so the stage is laid out in ascending slot order. */
     for (uint16_t i = 0; i < 4u; ++i) {
-        stage[i * 2u + 0u] = adc_word(2u, (uint16_t)(0x2A0u + i));
-        stage[i * 2u + 1u] = adc_word(0u, (uint16_t)(0x100u + i));
+        stage[i * 2u + 0u] = adc_word((uint16_t)(0x100u + i)); /* slot 0 */
+        stage[i * 2u + 1u] = adc_word((uint16_t)(0x2A0u + i)); /* slot 1 */
     }
     memset(dst, 0, sizeof(dst));
 
@@ -74,12 +80,12 @@ static void test_deinterleave_two_channels(void)
 
     bool ok = true;
     for (uint16_t i = 0; i < 4u; ++i) {
-        if (dst[i * 2u + 0u] != (uint16_t)(0x100u + i)) ok = false; /* ch0 */
-        if (dst[i * 2u + 1u] != (uint16_t)(0x2A0u + i)) ok = false; /* ch2 */
+        if (dst[i * 2u + 0u] != (uint16_t)(0x100u + i)) ok = false;
+        if (dst[i * 2u + 1u] != (uint16_t)(0x2A0u + i)) ok = false;
     }
-    CHECK(ok, "interleaved start order does not change the slots");
+    CHECK(ok, "positional stream packs slots in ascending order");
     CHECK(dst[0] == 0x100u && dst[1] == 0x2A0u,
-          "sample 0 packs as [ch0, ch2]");
+          "sample 0 packs as [slot0, slot1]");
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,9 +95,9 @@ static void test_deinterleave_three_channels(void)
     uint16_t stage[9];
 
     for (uint16_t i = 0; i < 3u; ++i) {
-        stage[i * 3u + 0u] = adc_word(0u, (uint16_t)(100u + i));
-        stage[i * 3u + 1u] = adc_word(1u, (uint16_t)(200u + i));
-        stage[i * 3u + 2u] = adc_word(2u, (uint16_t)(300u + i));
+        stage[i * 3u + 0u] = adc_word((uint16_t)(100u + i));
+        stage[i * 3u + 1u] = adc_word((uint16_t)(200u + i));
+        stage[i * 3u + 2u] = adc_word((uint16_t)(300u + i));
     }
     memset(dst, 0, sizeof(dst));
 
@@ -104,43 +110,74 @@ static void test_deinterleave_three_channels(void)
 }
 
 /* ------------------------------------------------------------------ */
-static void test_deinterleave_drops_disabled(void)
+static void test_deinterleave_ignores_reserved_bits(void)
 {
-    /* Only ch0 enabled: ch1 words must vanish and ch0 must stay dense. */
-    static const uint16_t ch0[4] = { 11u, 33u, 55u, 77u };
-    static const uint16_t ch1[4] = { 22u, 44u, 66u, 88u };
-    uint16_t stage[8];
-    uint16_t dst[4];
+    uint16_t dst[2];
+    /* Bits 15:12 are reserved on the RP2040 ADC FIFO and read back as
+     * zero, so a stray high nibble must not disturb the packing. */
+    uint16_t stage[2] = {
+        (uint16_t)(0xF000u | 0x123u),
+        (uint16_t)(0xE000u | 0x456u),
+    };
 
-    for (uint16_t i = 0; i < 4u; ++i) {
-        stage[i * 2u + 0u] = adc_word(0u, ch0[i]);
-        stage[i * 2u + 1u] = adc_word(1u, ch1[i]);
-    }
-    for (uint16_t i = 0; i < 4u; ++i) dst[i] = 0xDEADu;
+    dst[0] = 0u;
+    dst[1] = 0u;
+    adc_deinterleave(stage, 1u, 2u, 0x03u, dst);
 
-    adc_deinterleave(stage, 4u, 1u, 0x01u, dst);
-
-    /* channels=1 so only 4 stage words are consumed (2 frames of ch0). */
-    CHECK(dst[0] == 11u && dst[1] == 33u,
-          "disabled-channel words are skipped");
-    CHECK(dst[2] == 0xDEADu && dst[3] == 0xDEADu,
-          "unfilled tail is left untouched");
+    CHECK(dst[0] == 0x123u && dst[1] == 0x456u,
+          "bits 15:12 are reserved and masked off");
 }
 
 /* ------------------------------------------------------------------ */
-static void test_deinterleave_slot_bounds_and_guards(void)
+static void test_deinterleave_mask_mismatch(void)
 {
     uint16_t dst[4];
     uint16_t stage[4] = {
-        adc_word(0u, 11u), adc_word(2u, 22u),
-        adc_word(0u, 33u), adc_word(2u, 44u),
+        adc_word(11u), adc_word(22u), adc_word(33u), adc_word(44u),
     };
 
+    /* Only the enabled channels are ever converted, so when `channels`
+     * disagrees with popcount(mask) the round-robin cannot line up and the
+     * de-interleaver must leave the destination alone. */
     for (uint16_t i = 0; i < 4u; ++i) dst[i] = 0xDEADu;
-    /* mask 0x05 enables 2 slots but the caller asked for 1 channel   */
-    adc_deinterleave(stage, 4u, 1u, 0x05u, dst);
-    CHECK(dst[0] == 11u && dst[1] == 33u,
-          "slot >= channels is discarded");
+    adc_deinterleave(stage, 2u, 1u, 0x05u, dst);
+    CHECK(dst[0] == 0xDEADu && dst[1] == 0xDEADu,
+          "channels < popcount(mask) writes nothing");
+
+    for (uint16_t i = 0; i < 4u; ++i) dst[i] = 0xDEADu;
+    adc_deinterleave(stage, 4u, 2u, 0x01u, dst);
+    CHECK(dst[0] == 0xDEADu && dst[1] == 0xDEADu,
+          "channels > popcount(mask) writes nothing");
+}
+
+/* ------------------------------------------------------------------ */
+static void test_deinterleave_sparse_mask_is_dense(void)
+{
+    /* mask 0x05 = CH0 + CH2: the stream carries exactly two words per
+     * sample and they must land in slots 0 and 1 — there is no hole. */
+    uint16_t dst[6];
+    uint16_t stage[6] = {
+        adc_word(0x0A0u), adc_word(0x0C0u),
+        adc_word(0x0A1u), adc_word(0x0C1u),
+        adc_word(0x0A2u), adc_word(0x0C2u),
+    };
+    memset(dst, 0, sizeof(dst));
+
+    adc_deinterleave(stage, 3u, 2u, 0x05u, dst);
+
+    CHECK(dst[0] == 0x0A0u && dst[1] == 0x0C0u,
+          "sparse mask 0x05 packs CH0,CH2 into slots 0,1");
+    CHECK(dst[4] == 0x0A2u && dst[5] == 0x0C2u,
+          "sparse-mask last sample lands in the tail");
+}
+
+/* ------------------------------------------------------------------ */
+static void test_deinterleave_guards(void)
+{
+    uint16_t dst[4];
+    uint16_t stage[4] = {
+        adc_word(11u), adc_word(22u), adc_word(33u), adc_word(44u),
+    };
 
     for (uint16_t i = 0; i < 4u; ++i) dst[i] = 0xBEEFu;
     adc_deinterleave(nullptr, 4u, 2u, 0x05u, dst);
@@ -295,8 +332,10 @@ int main(void)
     test_slot_for_channel();
     test_deinterleave_two_channels();
     test_deinterleave_three_channels();
-    test_deinterleave_drops_disabled();
-    test_deinterleave_slot_bounds_and_guards();
+    test_deinterleave_ignores_reserved_bits();
+    test_deinterleave_mask_mismatch();
+    test_deinterleave_sparse_mask_is_dense();
+    test_deinterleave_guards();
     test_trigger_rising_and_falling();
     test_trigger_strided();
     test_trigger_crossings_and_span();
