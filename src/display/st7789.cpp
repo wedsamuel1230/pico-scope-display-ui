@@ -21,6 +21,27 @@
 #include "scope_config.h"
 #include "st7789_font.h"
 
+/* ---- panel byte order ---------------------------------------------
+   The comment above says big-endian and it means it: the ST7789 takes
+   RGB565 high byte first (MIPI DCS), but a uint16_t in RP2040 memory is
+   low byte first, and spi_init leaves the peripheral in 8-bit frames so
+   the two bytes go out in memory order. Every pixel handed to the panel
+   therefore has to be swapped on the way out, which is what lcd_px()
+   does at each store site. If a panel ever shows correct colour with the
+   swap applied, this is the one line to flip.
+   See docs/IMPLEMENTATION_GUIDE.md §"ST7789 ... 顏色次序" and the colour
+   bar check in docs/WIRING_GUIDE.md.                                */
+#define SCOPE_LCD_RGB565_SWAP 1
+
+static inline uint16_t lcd_px(uint16_t v)
+{
+#if SCOPE_LCD_RGB565_SWAP
+    return (uint16_t)((v >> 8) | (v << 8));
+#else
+    return v;
+#endif
+}
+
 /* ---- low level ---------------------------------------------------- */
 static inline void cs_select(void)   { gpio_put(SCOPE_LCD_CS_GPIO, 0); }
 static inline void cs_deselect(void) { gpio_put(SCOPE_LCD_CS_GPIO, 1); }
@@ -173,7 +194,7 @@ void st7789_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
         set_window(x, y0, w, rows);
 
         for (uint32_t i = 0; i < (uint32_t)w * rows; ++i)
-            fill_buf[i] = color;
+            fill_buf[i] = lcd_px(color);
         write_data((const uint8_t *)fill_buf,
                    (size_t)w * rows * 2u);
         y0 = (uint16_t)(y0 + rows);
@@ -193,7 +214,7 @@ void st7789_vline(uint16_t x, uint16_t y0, uint16_t y1, uint16_t color)
         return;
 
     for (uint16_t i = 0; i < len; ++i)
-        col_buf[i] = color;
+        col_buf[i] = lcd_px(color);
 
     cs_select();
     set_window(x, y0, 1u, len);
@@ -213,7 +234,7 @@ void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color)
         uint8_t bits_col = glyph[col];
         for (int row = 0; row < 8; ++row) {
             bits[col][row] =
-                ((bits_col >> row) & 1u) ? color : COLOR_BG;
+                lcd_px(((bits_col >> row) & 1u) ? color : COLOR_BG);
         }
     }
 
@@ -234,4 +255,47 @@ void st7789_draw_string(uint16_t x, uint16_t y, const char *s,
         cx   = (uint16_t)(cx + 6u);
         s   += 1;
     }
+}
+
+/* ---- bulk blit ----------------------------------------------------
+   A framebuffer-based UI (LVGL) renders into its own buffer and needs to
+   push whole rectangles. `px` holds w*h native-order RGB565 words with a
+   stride of w; the byte swap happens here, in row chunks sized to the
+   same fill_buf the solid-fill path uses, so no second buffer is needed
+   and the peak cost stays 3840 bytes. The rectangle is clamped to the
+   panel like st7789_fill_rect does, and rows past the edge are skipped
+   rather than wrapping.                                             */
+void st7789_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                 const uint16_t *px)
+{
+    if (w == 0u || h == 0u || px == nullptr)
+        return;
+    if (x >= SCOPE_LCD_WIDTH || y >= SCOPE_LCD_HEIGHT)
+        return;
+
+    uint16_t cw = w;
+    uint16_t ch = h;
+    if ((uint32_t)x + cw > SCOPE_LCD_WIDTH)
+        cw = (uint16_t)(SCOPE_LCD_WIDTH - x);
+    if ((uint32_t)y + ch > SCOPE_LCD_HEIGHT)
+        ch = (uint16_t)(SCOPE_LCD_HEIGHT - y);
+
+    cs_select();
+    uint16_t y0 = y;
+    uint32_t row = 0u; /* row index into the source, stride is w */
+    while (ch > 0u) {
+        uint16_t rows = (ch > FILL_CHUNK_ROWS) ? FILL_CHUNK_ROWS : ch;
+        set_window(x, y0, cw, rows);
+        uint32_t n = 0u;
+        for (uint16_t r = 0u; r < rows; ++r) {
+            const uint16_t *src = px + (row + r) * (uint32_t)w;
+            for (uint16_t c = 0u; c < cw; ++c)
+                fill_buf[n++] = lcd_px(src[c]);
+        }
+        write_data((const uint8_t *)fill_buf, (size_t)n * 2u);
+        row = (uint16_t)(row + rows);
+        y0  = (uint16_t)(y0 + rows);
+        ch  = (uint16_t)(ch - rows);
+    }
+    cs_deselect();
 }

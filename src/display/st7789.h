@@ -37,4 +37,9 @@ void st7789_draw_char(uint16_t x, uint16_t y, char c, uint16_t color);
 void st7789_draw_string(uint16_t x, uint16_t y, const char *s,
                         uint16_t color);
 
+/* Bulk RGB565 blit for a framebuffer-based UI (LVGL): `px` is w*h native
+   order words with a stride of w; the driver handles panel byte order.  */
+void st7789_blit(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                 const uint16_t *px);
+
 #endif /* SCOPE_ST7789_H */
