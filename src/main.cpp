@@ -26,6 +26,7 @@
 #include "capture/deinterleave.h"
 #include "capture/logic_capture.h"
 #include "capture/trigger.h"
+#include "display/lvgl_ui.h"
 #include "display/scope_view.h"
 #include "display/st7789.h"
 #include "measurements.h"
@@ -46,6 +47,7 @@ static union {
 
 static scope_set_config_t s_cfg;
 static bool               s_lcd_ok           = false;
+static bool               s_lvgl_ok          = false;
 static bool               s_usb_run_requested = false;
 
 typedef enum {
@@ -140,6 +142,59 @@ static uint8_t config_clamp(scope_set_config_t *cfg, uint32_t *applied_rate,
 }
 
 /* ------------------------------------------------------------------ */
+/* LCD backend switch                                                  */
+/* ------------------------------------------------------------------ */
+/* The LVGL screen (lvgl_ui) and the hand-rolled composition (scope_view)
+ * expose the same five operations, so every call site picks a backend
+ * here instead of at the point of use.  LVGL is preferred; the old
+ * renderer stays as the fallback so a panel that cannot bring the port
+ * up still shows something instead of going dark.                     */
+static void lcd_draw_chrome(scope_capture_mode_t mode, uint8_t mask,
+                            bool running)
+{
+    if (s_lvgl_ok)
+        lvgl_ui_set_chrome(mode, mask, running);
+    else
+        scope_view_draw_chrome(mode, mask, running);
+}
+
+static void lcd_set_running(bool running)
+{
+    if (s_lvgl_ok)
+        lvgl_ui_set_running(running);
+    else
+        scope_view_set_running(running);
+}
+
+static void lcd_draw_scope(const uint16_t *samples, uint16_t count,
+                           uint8_t channels, uint8_t mask)
+{
+    if (s_lvgl_ok)
+        lvgl_ui_draw_scope(samples, count, channels, mask);
+    else
+        scope_view_draw_scope(samples, count, channels, mask);
+}
+
+static void lcd_draw_logic(const uint32_t *samples, uint16_t count,
+                           uint8_t lane_mask)
+{
+    if (s_lvgl_ok)
+        lvgl_ui_draw_logic(samples, count, lane_mask);
+    else
+        scope_view_draw_logic(samples, count, lane_mask);
+}
+
+static void lcd_draw_measurements(const scope_measurements_t *per_channel,
+                                  uint8_t channels, uint8_t mask,
+                                  uint32_t rate)
+{
+    if (s_lvgl_ok)
+        lvgl_ui_draw_measurements(per_channel, channels, mask, rate);
+    else
+        scope_view_draw_measurements(per_channel, channels, mask, rate);
+}
+
+/* ------------------------------------------------------------------ */
 /* Capture + local render                                              */
 /* ------------------------------------------------------------------ */
 static uint8_t first_enabled_slot(uint8_t mask)
@@ -179,8 +234,8 @@ static void capture_once(uint8_t *flags_out, uint16_t *trigger_out,
             }
 
             if (s_lcd_ok) {
-                scope_view_draw_logic(s_buf.logic, s_cfg.sample_count,
-                                      (uint8_t)SCOPE_LOGIC_PIN_MASK);
+                lcd_draw_logic(s_buf.logic, s_cfg.sample_count,
+                               (uint8_t)SCOPE_LOGIC_PIN_MASK);
             }
         } else {
             flags |= SCOPE_FLAG_OVERFLOW;
@@ -215,7 +270,7 @@ static void capture_once(uint8_t *flags_out, uint16_t *trigger_out,
             flags |= SCOPE_FLAG_NO_TRIGGER;
 
         if (s_lcd_ok) {
-            scope_view_draw_scope(s_buf.analog, count, chans, mask);
+            lcd_draw_scope(s_buf.analog, count, chans, mask);
 
             scope_measurements_t m[SCOPE_ADC_CHANNELS];
             memset(m, 0, sizeof(m));
@@ -229,7 +284,7 @@ static void capture_once(uint8_t *flags_out, uint16_t *trigger_out,
                                              &m[slot]);
             }
 
-            scope_view_draw_measurements(m, chans, mask, rate);
+            lcd_draw_measurements(m, chans, mask, rate);
         }
     }
 
@@ -264,9 +319,12 @@ static void board_bring_up(void)
 
     s_lcd_ok = st7789_init();
     if (s_lcd_ok) {
-        scope_view_init();
-        scope_view_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
-                               s_cfg.channel_mask, false);
+        s_lvgl_ok = lvgl_ui_init();
+        if (!s_lvgl_ok)
+            scope_view_init();
+
+        lcd_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
+                        s_cfg.channel_mask, false);
     } else {
         /* No panel detected: leave the LED lit so the fault is visible. */
         gpio_put(SCOPE_LED_GPIO, 1);
@@ -306,8 +364,8 @@ static void handle_usb(void)
         s_cfg = applied;
 
         if (s_lcd_ok && chrome_dirty) {
-            scope_view_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
-                                   s_cfg.channel_mask, s_usb_run_requested);
+            lcd_draw_chrome((scope_capture_mode_t)s_cfg.capture_mode,
+                            s_cfg.channel_mask, s_usb_run_requested);
         }
 
         usb_link_send_ack(req.seq, status, applied_rate, applied_count);
@@ -323,7 +381,7 @@ static void handle_usb(void)
         adc_capture_abort();
         logic_capture_abort();
         if (s_lcd_ok)
-            scope_view_set_running(false);
+            lcd_set_running(false);
         break;
 
     case USB_LINK_NONE:
@@ -352,6 +410,11 @@ int main(void)
         handle_usb();
 #endif
 
+        /* Give LVGL a slice on every pass, including the idle one, so the
+         * screen still services its own timers while nothing is captured. */
+        if (s_lvgl_ok)
+            lvgl_ui_pump();
+
         uint8_t  flags = SCOPE_FLAG_NONE;
         uint16_t trig  = SCOPE_TRIGGER_NONE;
         uint32_t rate  = 0u;
@@ -367,7 +430,7 @@ int main(void)
 
         s_state = ST_ARM;
         if (s_lcd_ok)
-            scope_view_set_running(true);
+            lcd_set_running(true);
 
         s_state = ST_CAPTURE;
         capture_once(&flags, &trig, &rate, &chans);
