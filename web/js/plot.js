@@ -205,6 +205,24 @@ const ScopePlot = (() => {
     ctx.fillRect(TRIG_COL, WAVE_Y, 1, 6);
   }
 
+  /* Dashed threshold rule for the armed trigger level, in raw ADC codes.
+     Auto set writes that level, so drawing it is what makes the button
+     legible: you can see the trace cross the exact line it triggered on. */
+  function drawLevelLine(ctx, codes) {
+    const level = Math.max(0, Math.min(4095, codes));
+    const y = Math.round(WAVE_Y + WAVE_H - 1 - level * (WAVE_H - 1) / 4095) + 0.5;
+    ctx.save();
+    ctx.strokeStyle = C.amber;
+    ctx.globalAlpha = 0.8;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   /* ---- LOGIC: stacked digital lanes -------------------------------- */
   /* `samples[i] & 0xFF` holds D0 in bit 0 .. D7 in bit 7 — the same
      masking rule the firmware applies before display or transmit.      */
@@ -384,7 +402,7 @@ const ScopePlot = (() => {
   }
 
   /* opts: { mode, channelMask, samples, rate, count, channels, running,
-            flags, triggerIndex, message } */
+            flags, triggerIndex, triggerLevel, message } */
   function drawAll(ctx, opts) {
     const o = opts || {};
     const mode = o.mode === ScopeProto.MODE.LOGIC
@@ -415,6 +433,7 @@ const ScopePlot = (() => {
         if (o.triggerIndex != null && o.triggerIndex !== 0xFFFF) {
           drawTrigMarker(ctx);
         }
+        if (o.triggerLevel != null) drawLevelLine(ctx, o.triggerLevel);
       } else {
         drawEmpty(ctx, o.message || "No signal — press Demo");
       }
@@ -448,6 +467,7 @@ const ScopePlot = (() => {
       if (o.triggerIndex != null && o.triggerIndex !== 0xFFFF) {
         drawTrigMarker(ctx);
       }
+      if (o.triggerLevel != null) drawLevelLine(ctx, o.triggerLevel);
     } else {
       drawEmpty(ctx, o.message || "No signal — press Demo");
     }
@@ -460,6 +480,6 @@ const ScopePlot = (() => {
     setTheme, setLayout,
     fitCanvas, drawAll, drawTraceOnly,
     drawTrace, drawGrid, clearWave, drawHeader, drawLogic,
-    drawScaleRow, drawStateRow, slotsForMask,
+    drawScaleRow, drawStateRow, drawLevelLine, slotsForMask,
   };
 })();

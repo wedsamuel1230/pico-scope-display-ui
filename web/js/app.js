@@ -38,6 +38,15 @@
   const THEME_KEY = "pico-scope-theme";
   const DEFAULT_TRIG_LEVEL = 2048;
 
+  /* Auto set: a host-side measurement loop, because the firmware has no
+     autoscale routine — the AUTO softkey on the LCD is only a label.
+     Each pass grabs a frame, measures it, rewrites the timebase and the
+     trigger level, and waits for the ACK before judging the result.     */
+  const AUTOSET_PASSES  = 3;     /* measurement passes before stopping   */
+  const AUTOSET_PERIODS = 2.5;   /* cycles we want across the window     */
+  const AUTOSET_TIMEOUT = 1500;  /* ms to wait for one frame             */
+  const AUTOSET_FLAT    = 64;    /* codes of swing worth edge-triggering */
+
   /* ---- DOM --------------------------------------------------------- */
   const canvas      = el("scope-canvas");
   const $status     = el("status");
@@ -60,6 +69,7 @@
     disconnect: el("btn-disconnect"),
     apply:      el("btn-apply"),
     theme:      el("btn-theme"),
+    autoSet:    el("btn-autoset"),
   };
 
   const ctrls = {
@@ -99,6 +109,7 @@
   let srClock = 0;
   let srLast = "";
   let applyTimer = 0;
+  let autoSetBusy = false;
 
   /* Resolve the stored theme before the first paint so a light-theme
      reader never sees a dark flash. */
@@ -598,6 +609,7 @@
         running,
         flags: lastFrame.flags,
         triggerIndex: lastFrame.triggerIndex,
+        triggerLevel: currentTriggerLevel(),
       };
     }
 
@@ -813,6 +825,7 @@
     buttons.run.disabled = !connected || running;
     buttons.stop.disabled = !connected || !running;
     if (buttons.apply) buttons.apply.disabled = !connected;
+    if (buttons.autoSet) buttons.autoSet.disabled = !connected || autoSetBusy;
 
     if ($panelState) {
       $panelState.textContent = connected ? "CONNECTED" : "DISCONNECTED";
@@ -820,7 +833,195 @@
     }
   }
 
+  /* ---- auto set ------------------------------------------------------ */
+  /* Nothing below is firmware-specific: it is a plain loop over
+     CAPTURE_REQ / SET_CONFIG, so it behaves the same on the simulator and
+     on the board, and the level it picks is drawn back onto the trace as
+     a dashed rule (plot.js drawLevelLine).                              */
+
+  /* Per-slot min/max/mean and mean-crossing count of the interleaved
+     buffer. Slot order is the firmware's dense ascending order, so slot
+     i is the i-th ENABLED channel, not channel i.                       */
+  function slotStats(frame) {
+    const channels = Math.max(1, frame.channels || 1);
+    const n = Math.min(frame.count || 0,
+                       Math.floor(frame.samples.length / channels));
+    if (n < 4) return null;
+
+    const chans = ScopePlot.slotsForMask(
+      channels >= 3 ? 0x07 : channels === 2 ? 0x03 : 0x01);
+    const stats = [];
+    for (let slot = 0; slot < channels; ++slot) {
+      let min = FULL_SCALE;
+      let max = 0;
+      let sum = 0;
+      for (let i = 0; i < n; ++i) {
+        const v = frame.samples[i * channels + slot];
+        if (v < min) min = v;
+        if (v > max) max = v;
+        sum += v;
+      }
+      const mean = sum / n;
+      let crossings = 0;
+      for (let i = 1; i < n; ++i) {
+        const a = frame.samples[(i - 1) * channels + slot];
+        const b = frame.samples[i * channels + slot];
+        if (a < mean && b >= mean) ++crossings;
+      }
+      stats.push({
+        channel: chans[slot] === undefined ? slot : chans[slot],
+        min: min, max: max, mean: mean,
+        vpp: max - min,
+        crossings: crossings,
+      });
+    }
+    return { channels: channels, n: n, stats: stats };
+  }
+
+  /* Turn one measurement into the next SET_CONFIG. `settled` means the
+     frame already looks right, so the caller can stop early.           */
+  function autoSetPlan(frame) {
+    const m = slotStats(frame);
+    if (!m) return null;
+
+    /* Trigger on the lane with the most swing: a flat lane has no edge. */
+    let best = 0;
+    for (let slot = 1; slot < m.channels; ++slot) {
+      if (m.stats[slot].vpp > m.stats[best].vpp) best = slot;
+    }
+    const s = m.stats[best];
+
+    /* Timebase: put AUTOSET_PERIODS cycles across the window. With no
+       measurable period, zoom out a step so the next pass sees more.   */
+    const window = frame.rate > 0 ? frame.count / frame.rate : 0;
+    let rate;
+    if (window > 0 && s.crossings >= 1 && s.crossings <= m.n / 8) {
+      const period = window / s.crossings;
+      rate = frame.count / (period * AUTOSET_PERIODS);
+    } else {
+      rate = frame.rate / 4;
+    }
+    rate = Math.round(clamp(rate, L.MIN_RATE_HZ, L.MAX_RATE_HZ));
+
+    /* Level: mid-swing, where the edge is steepest. The edge is the one
+       leaving the average, so a sawtooth latches on its fast ramp.     */
+    const mid = (s.min + s.max) / 2;
+    const level = Math.round(clamp(mid, 0, FULL_SCALE));
+
+    /* Edge-trigger only a real signal; a near-flat lane stays in AUTO so
+       the board free-runs instead of waiting for a crossing.           */
+    const live = s.vpp >= AUTOSET_FLAT;
+    const plan = {
+      rate: rate,
+      count: frame.count,
+      triggerChannel: s.channel,
+      triggerLevel: level,
+      edge: s.mean <= mid ? 0 : 1,
+      triggerMode: live ? P.TRIG.NORMAL : P.TRIG.AUTO,
+    };
+
+    const rateNow = parseInt(ctrls.rate.value, 10);
+    plan.settled = Number.isFinite(rateNow) &&
+      Math.abs(rate - rateNow) <= Math.max(1, rateNow * 0.1) &&
+      Math.abs(level - currentTriggerLevel()) <= 8;
+    return plan;
+  }
+
+  /* Write the plan into the form, so the controls stay the single source
+     of truth and the user can see (and tweak) what auto set decided.   */
+  function writeAutoSet(plan) {
+    if (ctrls.rate) ctrls.rate.value = String(plan.rate);
+    if (ctrls.count) ctrls.count.value = String(plan.count);
+    if (ctrls.trigChannel) {
+      ctrls.trigChannel.value = String(plan.triggerChannel);
+    }
+    if (ctrls.trigLevel) ctrls.trigLevel.value = String(plan.triggerLevel);
+    if (ctrls.trigEdge) {
+      ctrls.trigEdge.value = plan.edge === 1 ? "falling" : "rising";
+    }
+    if (ctrls.trigMode) {
+      ctrls.trigMode.value =
+        plan.triggerMode === P.TRIG.NORMAL ? "normal" : "auto";
+    }
+    syncTriggerLevelOut();
+  }
+
+  /* One-shot capture: claim the frame ourselves so onCaptureData does not
+     draw it a second time, and resolve null if the board never answers. */
+  function grabFrame(timeoutMs) {
+    const waiter = awaitFrame(P.MSG.CAPTURE_DATA, timeoutMs || AUTOSET_TIMEOUT);
+    transport.writeFrame(P.captureReq(seq)).catch(() => { /* link lost */ });
+    return waiter;
+  }
+
+  async function autoSet() {
+    if (!connected || !transport || autoSetBusy) return;
+    if (currentMode() !== P.MODE.SCOPE) {
+      setStatus("auto set works on analog captures — switch to SCOPE", "warn");
+      return;
+    }
+
+    autoSetBusy = true;
+    const wasRunning = running;
+    running = false;              /* stop the stream: this pass owns the link */
+    syncButtons();
+    setStatus("auto set · measuring…", "ok");
+
+    let plan = null;
+    let ack = null;
+    try {
+      for (let pass = 0; pass < AUTOSET_PASSES; ++pass) {
+        const ev = await grabFrame();
+        if (!ev) {
+          setStatus("auto set · no frame came back", "err");
+          return;
+        }
+
+        const d = P.parseCaptureData(ev.payload);
+        if (!d || d.mode === P.MODE.LOGIC || !d.samples || !d.samples.length) {
+          setStatus("auto set · the frame could not be measured", "err");
+          return;
+        }
+
+        lastFrame = d;
+        updateTiles(d);
+        render();
+
+        plan = autoSetPlan(d);
+        if (!plan) {
+          setStatus("auto set · frame too short to measure", "err");
+          return;
+        }
+        if (plan.settled) break;
+
+        writeAutoSet(plan);
+        ack = await applyConfig(false);
+        if (!ack || ack.status !== P.ACK.OK) {
+          setStatus("auto set · the board refused the new settings", "err");
+          return;
+        }
+      }
+    } finally {
+      autoSetBusy = false;
+      if (wasRunning) {
+        running = true;
+        if (transport) loop();
+      }
+      syncButtons();
+      render();
+    }
+
+    if (plan) {
+      const total = ack ? ack.appliedRate : plan.rate;
+      setStatus("auto set · " + fmtRate(P.channelRate(total, currentMask())) +
+                " per channel · trigger level " + plan.triggerLevel + " codes" +
+                (plan.triggerMode === P.TRIG.NORMAL
+                  ? "" : " · free-run, the lane looks flat"), "ok");
+    }
+  }
+
   /* ---- events -------------------------------------------------------- */
+  if (buttons.autoSet) buttons.autoSet.addEventListener("click", () => { autoSet(); });
   buttons.demo.addEventListener("click", () => connect("demo"));
   buttons.connect.addEventListener("click", () => connect("serial"));
   if (buttons.apply) {
